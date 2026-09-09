@@ -1,0 +1,10 @@
+---
+agent: 'agent'
+description: 'On-board (me i.e. the developer) to this project. Setup the development environment'
+---
+
+## Preconditions and assumptions
+- User/developer has just clone the repository
+- User/developer is new to this project.
+
+Follow the instructions in devenv.md and setup the development environment for this developer. Generate the evironment setup (batch or shell file).
