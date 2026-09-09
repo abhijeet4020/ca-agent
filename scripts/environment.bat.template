@@ -1,0 +1,27 @@
+@echo off
+REM Environment setup for the ca-agent project (Windows).
+REM Copy to the repository root as environment.bat; it is gitignored per docs/devenv.md.
+REM Chain before every command:  .\environment.bat && uv run pytest -q
+
+set "REPO_ROOT=%~dp0"
+if "%REPO_ROOT:~-1%"=="\" set "REPO_ROOT=%REPO_ROOT:~0,-1%"
+
+set "SRC_ROOT=%REPO_ROOT%\src"
+set "TEST_ROOT=%REPO_ROOT%\tests"
+set "PYTHONPATH=%SRC_ROOT%"
+
+REM Client paths contain Devanagari and & ( ) characters. Without UTF-8 mode the
+REM default Windows ANSI codepage raises UnicodeEncodeError during the corpus walk.
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+
+set "UV_PROJECT_ENVIRONMENT=%REPO_ROOT%\.venv"
+set "CAAGENT_CONFIG=%REPO_ROOT%\config\pipeline.toml"
+set "CAAGENT_OUTPUT_ROOT=%REPO_ROOT%\data"
+set "PATH=%REPO_ROOT%\.venv\Scripts;%PATH%"
+
+if exist "%REPO_ROOT%\.env" (
+    for /f "usebackq eol=# tokens=1,* delims==" %%a in ("%REPO_ROOT%\.env") do set "%%a=%%b"
+)
+
+echo Environment configured: ca-agent @ %REPO_ROOT%

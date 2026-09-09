@@ -1,0 +1,217 @@
+"""Purpose: the operator-facing entry point. SPEC-01 Phase 1 processes ~16,600 files, so the
+CLI exists to make a run inspectable before it is expensive: `discover` walks and hashes the
+corpus without converting anything, and `config hash` prints the per-section fingerprints that
+govern reuse. Argument parsing and reporting live here; all decisions live in lower layers.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from collections import Counter
+from pathlib import Path
+
+from ca_agent.catalog.dedup import DedupOutcome, ScopeDedupIndex
+from ca_agent.catalog.discovery import DiscoveryResult, discover_source_files
+from ca_agent.catalog.hashing import compute_content_hash
+from ca_agent.config.fingerprint import section_fingerprint
+from ca_agent.config.settings import ConfigError, PipelineSettings, load_settings
+from ca_agent.pipeline.routing import select_route
+from ca_agent.readers.detection import detect_format
+
+_LOG = logging.getLogger("ca_agent")
+_FINGERPRINTED_SECTIONS = (
+    "detection",
+    "tabular",
+    "text",
+    "chunking",
+    "pdf",
+    "vision",
+    "archive",
+    "structured",
+    "embedding",
+)
+#: The one category in the corpus whose directory is itself the client scope.
+_CATEGORY_IS_SCOPE = frozenset({"Mauli Hospital Tally Back up"})
+
+_EXIT_OK = 0
+_EXIT_CONFIG_ERROR = 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Parse arguments, dispatch, and translate configuration failures into an exit code."""
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(message)s",
+        stream=sys.stderr,
+    )
+    try:
+        settings = _load(args)
+    except ConfigError as error:
+        _LOG.error("configuration error: %s", error)
+        return _EXIT_CONFIG_ERROR
+    return args.handler(args, settings)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="ca-agent", description=__doc__)
+    parser.add_argument("--config", type=Path, default=None, help="path to pipeline.toml")
+    parser.add_argument("--verbose", action="store_true", help="emit debug logging")
+    subcommands = parser.add_subparsers(dest="command", required=True)
+
+    discover = subcommands.add_parser(
+        "discover", help="walk and hash the corpus without converting anything"
+    )
+    discover.add_argument("--category", default=None, help="limit to one top-level category")
+    discover.add_argument("--limit", type=int, default=None, help="stop after N files")
+    discover.add_argument("--no-hash", action="store_true", help="skip hashing (walk only)")
+    discover.add_argument(
+        "--classify", action="store_true", help="detect format and route for every file"
+    )
+    discover.set_defaults(handler=_run_discover)
+
+    config = subcommands.add_parser("config", help="inspect effective configuration")
+    config.add_argument("action", choices=("show", "hash"))
+    config.set_defaults(handler=_run_config)
+    return parser
+
+
+def _load(args: argparse.Namespace) -> PipelineSettings:
+    """Load settings, tolerating a missing vision credential for read-only subcommands.
+
+    `discover` performs no paid calls, so demanding an API key would block the very command an
+    operator uses to estimate cost before supplying one.
+    """
+    needs_credentials = args.command not in {"discover", "config"}
+    config_path = args.config if args.config and args.config.exists() else None
+    try:
+        return load_settings(config_path)
+    except ConfigError:
+        if needs_credentials:
+            raise
+        return load_settings(config_path, overrides={"vision": {"enabled": False}})
+
+
+def _run_config(args: argparse.Namespace, settings: PipelineSettings) -> int:
+    if args.action == "show":
+        print(settings.model_dump_json(indent=2))
+        return _EXIT_OK
+    for name in _FINGERPRINTED_SECTIONS:
+        print(f"{name:<12} {section_fingerprint(name, getattr(settings, name))}")
+    return _EXIT_OK
+
+
+def _run_discover(args: argparse.Namespace, settings: PipelineSettings) -> int:
+    raw_root = settings.paths.raw_root
+    if not raw_root.is_dir():
+        _LOG.error("corpus root %s does not exist", raw_root)
+        return _EXIT_CONFIG_ERROR
+
+    _LOG.info("walking %s", raw_root)
+    result = discover_source_files(raw_root, _CATEGORY_IS_SCOPE)
+    sources = _filter(result, args)
+    _report_walk(result, sources)
+
+    if args.classify:
+        _report_routes(sources, raw_root, settings)
+    if args.no_hash:
+        return _EXIT_OK
+    _report_dedup(sources, raw_root)
+    return _EXIT_OK
+
+
+def _filter(result: DiscoveryResult, args: argparse.Namespace):
+    sources = result.sources
+    if args.category:
+        sources = tuple(item for item in sources if item.scope.category == args.category)
+    if args.limit is not None:
+        sources = sources[: args.limit]
+    return sources
+
+
+def _report_walk(result: DiscoveryResult, selected) -> None:
+    print(f"scopes discovered      : {len(result.scopes)}")
+    print(f"files discovered       : {result.file_count()}")
+    print(f"files in a client scope: {len(result.sources)}")
+    print(f"files selected         : {len(selected)}")
+    if result.unscoped_paths:
+        print(f"files outside any scope: {len(result.unscoped_paths)} (recorded, not skipped)")
+    if result.unreadable_paths:
+        print(f"files that failed stat : {len(result.unreadable_paths)}")
+
+    by_category = Counter(item.scope.category for item in result.sources)
+    print("\nfiles per category:")
+    for category, count in sorted(by_category.items()):
+        print(f"  {count:>6}  {category}")
+
+    extensions = Counter((item.relative_path.suffix or "(none)").lower() for item in result.sources)
+    print("\ntop extensions:")
+    for extension, count in extensions.most_common(15):
+        print(f"  {count:>6}  {extension}")
+
+
+def _report_dedup(sources, raw_root: Path) -> None:
+    """Hash every selected file and report client-scoped duplicate savings."""
+    indexes: dict[str, ScopeDedupIndex] = {}
+    duplicates = 0
+    failures = 0
+    total_bytes = 0
+    unique_bytes = 0
+
+    for source in sources:
+        index = indexes.setdefault(source.scope.scope_id, ScopeDedupIndex(source.scope.scope_id))
+        try:
+            content = compute_content_hash(raw_root / source.relative_path)
+        except OSError as error:
+            failures += 1
+            _LOG.debug("cannot hash %s: %s", source.relative_path, error)
+            continue
+        total_bytes += content.size_bytes
+        if index.register(source, content) is DedupOutcome.DUPLICATE:
+            duplicates += 1
+        else:
+            unique_bytes += content.size_bytes
+
+    unique = sum(len(index.content_digests()) for index in indexes.values())
+    print("\ncontent hashing (client-scoped):")
+    print(f"  distinct content items : {unique}")
+    print(f"  duplicate source paths : {duplicates}")
+    print(f"  unreadable files       : {failures}")
+    print(f"  bytes walked           : {total_bytes / 1_048_576:,.1f} MiB")
+    print(f"  bytes after dedup      : {unique_bytes / 1_048_576:,.1f} MiB")
+
+
+def _report_routes(sources, raw_root: Path, settings: PipelineSettings) -> None:
+    """Detect and route every selected file, proving SPEC-01 req 6 coverage on real data."""
+    soffice = bool(settings.external_tools.soffice_path)
+    unrar = bool(settings.external_tools.unrar_path)
+
+    families: Counter[str] = Counter()
+    routes: Counter[str] = Counter()
+    conflicts = 0
+    unroutable = 0
+
+    for source in sources:
+        try:
+            probe = detect_format(raw_root / source.relative_path, settings.detection)
+        except OSError as error:
+            _LOG.debug("cannot inspect %s: %s", source.relative_path, error)
+            families["(unreadable)"] += 1
+            routes["(unreadable)"] += 1
+            unroutable += 1
+            continue
+        families[probe.family.value] += 1
+        conflicts += int(probe.extension_conflict)
+        routes[select_route(probe, unrar_available=unrar, soffice_available=soffice).route.value] += 1
+
+    print("\ndetected format families:")
+    for family, count in families.most_common():
+        print(f"  {count:>6}  {family}")
+    print("\nroutes selected:")
+    for route, count in routes.most_common():
+        print(f"  {count:>6}  {route}")
+    print(f"\n  files whose extension contradicts their content: {conflicts}")
+    print(f"  files with no route at all (must be 0): {unroutable}")

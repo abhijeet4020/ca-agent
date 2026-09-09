@@ -1,1 +1,30 @@
+# Bronze layer: the untouched source corpus. Never committed, never modified.
 raw_data/
+
+# Silver/Gold pipeline outputs (immutable, regenerable, large).
+data/
+build/
+
+# Environment scripts are machine-specific (docs/devenv.md step 6).
+# Regenerate from scripts/environment.bat.template
+environment.bat
+environment.sh
+
+# Secrets
+.env
+.env.*
+!.env.example
+config/*.local.toml
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Windows shell artifacts
+Thumbs.db

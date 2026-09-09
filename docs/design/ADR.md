@@ -12,3 +12,135 @@ The index format is of two types
 
 ## ADR Index
 - `./packagedesign.md` : Documents the package/module design and their dependencies in mermaid.js format.  
+- ADR-001 : Python import package is `src/ca_agent/` while the distribution stays `ca-agent`.
+- ADR-002 : Tests live under the existing `tests/` root using the AGENTS.md subfolder names.
+- ADR-003 : Bronze is `raw_data/` in place, read-only; Phase 1 builds Silver under `data/silver/`.
+- ADR-004 : Reuse fingerprints are computed per config section so a change invalidates only affected outputs.
+- ADR-005 : Version identity is a per-run integer ordinal; active version is the highest sealed manifest, with no mutable pointer.
+- ADR-006 : Nested archives recurse to depth 3 under size, member-count and compression-ratio caps.
+- ADR-007 : Format detection is signature-first; a file extension is recorded as evidence only.
+- ADR-008 : Owner-password-only PDFs are opened with an empty password rather than reported as locked.
+- ADR-009 : pandas is excluded from the tabular read path to preserve leading-zero identifiers.
+- ADR-010 : PyMuPDF is rejected as AGPL-3.0; pypdf, pdfplumber and pypdfium2 are used instead.
+- ADR-011 : The vision route uses httpx directly so retry and failure paths are testable without network.
+- ADR-012 : Archive member names are sanitised for the filesystem while the original name is kept as lineage.
+
+---
+
+## ADR-001: Python package is `src/ca_agent/`, not `src/ca-agent/`
+`AGENTS.md` specifies `src/ca-agent/`, but a hyphen is not a valid Python identifier, so that
+directory could never be imported. The distribution name stays `ca-agent` (declared in
+`pyproject.toml`) and the import package is `ca_agent`, which is the standard PEP 503
+relationship between the two. **This is a deliberate deviation from `AGENTS.md`, recorded here
+because an `AGENTS.md` edit was not authorised.**
+
+## ADR-002: Tests live in `tests/`, not `test/`
+`AGENTS.md` specifies `test/plans`, `test/unit`, `test/testdata`. The repository already
+contained `tests/`, and the working rules say to follow existing project patterns before
+introducing new ones. The `AGENTS.md` subfolder names are adopted inside the existing root:
+`tests/unit`, `tests/integration`, `tests/plans`, `tests/testdata`. A second parallel `test/`
+tree would be worse than either option.
+
+## ADR-003: Bronze is the raw corpus in place; Phase 1 builds Silver
+`raw_data/` **is** the Bronze layer. It is opened read-only and never copied, moved or written
+to, which satisfies SPEC-01 req 8's prohibition on modifying source files at the strongest
+possible level: no code path writes there at all. Silver (`data/silver/`) holds every derived
+artifact. Gold (embeddings and FAISS) is a later phase.
+
+## ADR-004: Reuse fingerprints are per config section, not global
+SPEC-01 req 8 invalidates "the affected outputs" when configuration changes. A single global
+config hash would invalidate all ~16,600 files whenever any unrelated setting moved — for
+instance, changing a vision temperature would discard thousands of Parquet files. Each config
+section is therefore fingerprinted independently and each output records only the sections that
+produced it. Credentials, timeouts and retry counts are excluded because they do not change the
+content of a successful output.
+
+## ADR-005: Version identity is a run ordinal, and there is no mutable "latest" pointer
+Each run allocates one integer ordinal at start-up; every version directory it publishes is
+named from it. Two consequences: worker output directories are unique by construction so
+parallel writers cannot collide, and version ordering is a total integer order requiring no
+locks and no trust in the system clock. Active-version resolution scans for the highest *sealed*
+manifest rather than reading a pointer file, because a pointer would itself be mutable prior
+state and a torn-read hazard if a run died between publishing outputs and repointing. A crashed
+run therefore leaves the previous manifest active, and its abandoned version directories are
+ignored — never deleted, since req 8 prohibits output deletion.
+
+## ADR-006: Nested archives recurse to depth 3 under explicit caps
+SPEC-01 records this as an unresolved Open Decision. The approved policy is: recurse to a maximum
+nesting depth of 3, bounded by a total expanded-size cap, a member-count cap, and a per-member
+compression-ratio guard checked *while streaming* rather than trusting a declared size. Breaching
+any cap produces an explicit processing record and format document, never a silent omission.
+Rationale: Indian ITR and TDS downloads are routinely zip-within-zip, so depth 1 would lose real
+client data, while unbounded recursion is a denial-of-service risk on an unvetted corpus.
+
+## ADR-007: Format detection is signature-first; the extension is only evidence
+Probing the real corpus disproved the assumption that extensions are reliable: 61 of 66 `.xlk`
+files are OOXML, roughly 30 percent of sampled `.xls` files are OOXML or plain text, all 411
+`.db` files are Windows `Thumbs.db` artifacts rather than Tally databases, and 28 files have no
+extension at all. Routing therefore uses signature and container probing, and an
+extension/content mismatch is recorded as evidence in the format document rather than treated as
+a failure.
+
+No magic-number *library* is used. The formats needing precise identification (ZIP and its
+OOXML variants, OLE and its variants, PDF, the image formats, 7z, RAR, gzip, RTF) have
+unambiguous signatures, and everything a library would additionally recognise still routes to
+`NO_COMPATIBLE_READER`. A hand-written table in `readers/detection.py` is therefore fully
+deterministic, testable, and one dependency lighter. Weak two-byte markers such as BMP are
+validated against their header fields rather than trusted on the prefix alone.
+
+Running detection over the full corpus then proved the approach twice over. **261 files named
+`*.pdf` are actually Java serialized object streams** (magic `AC ED 00 05`) written by the
+Income Tax e-filing utility; a PDF parser would have been handed all of them. They are recorded
+as `JAVA_SERIALIZED` and never deserialised, since Java deserialisation is a code-execution
+vector. It also exposed a bug: a compound file keeps its directory in a sector named by the
+header, not at a fixed offset, so an initial prefix-scan implementation misclassified **175
+genuine `.xls` and `.doc` files** as unknown. Detection now parses with `olefile` and keeps the
+scan only as a fallback for damaged containers. Unknown files fell from 451 to 14 of 16,596.
+
+## ADR-008: Owner-password-only PDFs are read, not reported as locked
+Many ITR-V and TIS PDFs in the corpus carry an encryption dictionary but have an empty *user*
+password; the owner password only restricts printing and copying. Treating any `/Encrypt` marker
+as `locked` would discard hundreds of readable filings. The pipeline attempts an empty password
+and, when that succeeds, processes the document normally while noting the owner restriction in
+its format document. Only a genuine refusal is recorded as `PASSWORD_PROTECTED_FILE`. No password
+is ever guessed, requested, or brute-forced.
+
+## ADR-009: pandas is excluded from the tabular read path
+pandas coerces `"0012345"` to the integer `12345`, which would silently destroy PAN, GSTIN, TAN
+and bank-account identifiers across the entire corpus — exactly the fields a financial analysis
+agent depends on. Spreadsheets are read cell-by-cell and written with `pyarrow` directly. A
+column becomes a typed Arrow column only when every non-empty cell parses to one type *and*
+round-trips back to its original text; otherwise it stays a string and the format document
+records why inference was rejected. This directly implements SPEC-01 req 1's prohibition on
+silently coercing invalid values.
+
+## ADR-010: PyMuPDF is rejected on licensing grounds
+PyMuPDF is the most capable Python PDF toolkit but is AGPL-3.0, which is incompatible with
+proprietary software. PDF work therefore uses `pypdf` for structure and encryption, `pdfplumber`
+for native text with layout, and `pypdfium2` (BSD/Apache) for rasterisation.
+
+## ADR-011: The vision route uses httpx directly rather than the OpenAI SDK
+An OpenAI-compatible endpoint is plain HTTP, and `httpx.MockTransport` allows the retry, backoff
+and partial-page-failure paths to be tested deterministically with zero network access. The SDK
+would add a dependency whose retry behaviour is harder to script in tests. An autouse test
+fixture makes any real socket connection raise, so "no test touches the network" is enforced by
+the harness rather than by reviewer discipline.
+
+## ADR-012: Archive member names are sanitised, not rejected, while the original is kept as lineage
+Extracting the real corpus surfaced a zip whose member name contains embedded newline characters
+(`G D CONS
+INV NO 297
+10-03-2020.pdf`). Windows cannot create such a file, and an early
+implementation both failed to write it and then crashed in its own cleanup, because `unlink` on an
+unexpressible path raises too.
+
+Rejecting these members would discard real client invoices, so the on-disk name is sanitised
+(control characters and `< > : " | ? *` replaced, trailing dots and spaces stripped) and given a
+short digest suffix so two different names cannot collide onto one path and silently overwrite each
+other. **The original member name is always retained in the processing record as lineage**, so the
+sanitised filename is a storage detail rather than a loss of information.
+
+One case is still rejected outright rather than sanitised: a single letter followed by a colon
+(`a:b.txt`). Windows parses that as a drive specifier, so sanitising the colon would mask a genuine
+attempt to escape the extraction root. Cleanup after any failed write is now best-effort and can
+never raise, because SPEC-01 req 7 requires that siblings continue.

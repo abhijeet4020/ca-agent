@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Environment setup for the ca-agent project (Unix).
+# Copy to the repository root as environment.sh; it is gitignored per docs/devenv.md.
+# Chain before every command:  source ./environment.sh && uv run pytest -q
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export REPO_ROOT
+export SRC_ROOT="${REPO_ROOT}/src"
+export TEST_ROOT="${REPO_ROOT}/tests"
+export PYTHONPATH="${SRC_ROOT}"
+
+# Client paths contain Devanagari and & ( ) characters.
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
+
+export UV_PROJECT_ENVIRONMENT="${REPO_ROOT}/.venv"
+export CAAGENT_CONFIG="${REPO_ROOT}/config/pipeline.toml"
+export CAAGENT_OUTPUT_ROOT="${REPO_ROOT}/data"
+export PATH="${REPO_ROOT}/.venv/bin:${PATH}"
+
+if [ -f "${REPO_ROOT}/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "${REPO_ROOT}/.env"
+    set +a
+fi
+
+echo "Environment configured: ca-agent @ ${REPO_ROOT}"

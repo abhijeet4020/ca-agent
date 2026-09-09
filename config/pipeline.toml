@@ -1,0 +1,81 @@
+# Default pipeline configuration for the Silver layer (SPEC-01 Phase 1).
+#
+# Precedence: these defaults, then config/pipeline.local.toml, then CAAGENT__SECTION__KEY
+# environment variables, then CLI overrides.
+#
+# WARNING: every value here except those listed in a section's FINGERPRINT_EXCLUDE feeds the
+# reuse fingerprint. Changing one invalidates that section's outputs and forces a reprocess on
+# the next run (SPEC-01 req 8). Credentials never belong in this file; use .env.
+
+[paths]
+raw_root = "raw_data"
+output_root = "data"
+
+[detection]
+signature_sample_bytes = 4096
+text_probe_bytes = 65536
+# Extension conflicts are common and legitimate in this corpus (61 of 66 .xlk files are
+# actually OOXML), so a mismatch is recorded as evidence rather than treated as a failure.
+treat_extension_conflict_as_failure = false
+
+[tabular]
+# Round-trip identity is what preserves leading zeros in PAN, GSTIN and account numbers.
+require_round_trip_for_typing = true
+infer_column_types = true
+parquet_compression = "snappy"
+csv_sniff_bytes = 8192
+
+[text]
+normalise_whitespace = true
+
+[chunking]
+chunk_size = 1000
+chunk_overlap = 120
+min_chunk_characters = 1
+
+[pdf]
+min_text_characters_for_text_page = 120
+scanned_image_coverage_ratio = 0.5
+empty_page_max_characters = 20
+empty_page_max_coverage_ratio = 0.05
+raster_dpi = 250
+native_text_duplicate_jaccard = 0.5
+
+[vision]
+enabled = true
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+temperature = 0.0
+max_output_tokens = 4096
+max_image_edge_pixels = 2000
+prompt_version = "1"
+request_timeout_seconds = 120.0
+max_attempts = 5
+backoff_initial_seconds = 0.5
+backoff_multiplier = 2.0
+max_concurrency = 4
+
+[archive]
+# Depth 3 resolves the Open Decision in SPEC-01. Exceeding any limit below produces an
+# explicit processing record, never a silent skip.
+max_depth = 3
+max_total_expanded_bytes = 2147483648
+max_member_count = 10000
+max_compression_ratio = 100.0
+
+[structured]
+min_collection_size = 3
+min_key_jaccard = 0.8
+min_object_element_ratio = 0.9
+min_scalar_leaf_ratio = 0.7
+max_element_depth = 2
+
+[embedding]
+# Reserved for the Gold layer. Unused in Phase 1.
+enabled = false
+provider = "sentence-transformers"
+model_name = "sentence-transformers/all-MiniLM-L6-v2"
+dimension = 384
+
+[external_tools]
+# Leave blank to record affected files as NO_COMPATIBLE_READER instead of converting them.
