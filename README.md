@@ -63,8 +63,11 @@ LangGraph arrive in later phases and are deliberately not dependencies yet.
 
 ## Current status
 
-**Phase 1 (Silver layer) is in progress.** Steps 0–5 of 13 are complete and validated against the
-full real corpus.
+**Phase 1 (Silver layer) is in progress.** Steps 0–6 of 13 are implemented. Steps 0–5 are validated
+against the full real corpus; step 6's corpus run is still outstanding.
+
+> **Resuming work?** `docs/design/ADR.md` records every decision made so far, and
+> `docs/design/sourcemap.md` lists every source file and its purpose. Start there.
 
 | Step | Scope | State |
 |---|---|---|
@@ -74,7 +77,7 @@ full real corpus.
 | 3 | Discovery, scope resolution, hashing, client-scoped dedup | Done |
 | 4 | Signature-based format detection and the routing table | Done |
 | 5 | Archive extraction with depth limits and bomb guards | Done |
-| 6 | Tabular → Parquet | In progress |
+| 6 | Tabular → Parquet | Implemented; full-corpus validation run outstanding |
 | 7 | Text extraction and chunking | Pending |
 | 8 | JSON/XML structural routing | Pending |
 | 9 | PDF text-vs-scanned classification | Pending |

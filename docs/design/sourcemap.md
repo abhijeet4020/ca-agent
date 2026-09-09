@@ -38,6 +38,8 @@
 
 - `src/ca_agent/readers/archives.py` : Expands zip/7z/gzip into a separate area, never touching the source. Depth-limited recursion, a streaming compression-ratio guard (a declared member size cannot be trusted), member-path sanitation, and per-member failure records so a locked or malformed member never stops its siblings.
 
+- `src/ca_agent/readers/tabular.py` : Converts spreadsheets and delimited text to Parquet, one output per populated worksheet. Captures every cell as both text and native value and types a column only when every value round-trips, which is what preserves zero-padded PAN, GSTIN and account identifiers. Reports uncached formula cells and empty sheets; rows are never dropped and values never coerced.
+
 ### Layer 4 - orchestration
 - `src/ca_agent/pipeline/routing.py` : Maps an observed format to its processing route. Lives in L4 because choosing between routes requires knowing all of them exist, which ARCHITECTURE.md forbids an L3 module from doing. Exhaustive over FormatFamily - an unrouted family raises rather than defaulting, so SPEC-01 req 6 coverage cannot silently regress.
 
