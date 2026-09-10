@@ -28,6 +28,7 @@ _LAYERS: dict[str, int] = {
     "vision": 3,
     "chunking": 3,
     "docgen": 3,
+    "gold": 3,
     "pipeline": 4,
     "cli": 5,
 }

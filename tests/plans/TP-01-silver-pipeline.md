@@ -1094,3 +1094,58 @@ The pipe is escaped and the table structure survives.
 
 Acceptance criterion 2 is satisfied at Silver only up to chunk production. Embeddings and FAISS
 persistence are Gold-layer work in a later phase and are deliberately out of scope for TP-01.
+
+---
+
+## Group L — Gold layer: embeddings and FAISS (requirement 2, Phase 2)
+
+## Test: test_each_client_scope_gets_its_own_index
+## Description
+Requirement 2 is explicit that matching client names in different categories must not share an
+index. LIC Employees exists under two categories in the real corpus.
+## Inputs
+Chunks from two scopes sharing a client name.
+## Expected Output
+Two separate index directories; neither contains the other's vectors.
+
+## Test: test_index_metadata_records_the_model_and_dimension
+## Description
+Requirement 2 lists embedding model and vector dimension as required metadata; without them a
+stored index cannot be safely reloaded or compared.
+## Inputs
+An index built with a known embedder.
+## Expected Output
+Model name and dimension are persisted alongside the vectors.
+
+## Test: test_vector_to_chunk_mapping_survives_save_and_load
+## Description
+Requirement 2: maintain the mapping between vectors and source chunks when saving and loading.
+A mapping that drifts by one row silently attributes text to the wrong client.
+## Inputs
+An index of several chunks, saved and reloaded.
+## Expected Output
+Every vector row resolves to the chunk it was built from.
+
+## Test: test_empty_text_is_never_embedded
+## Description
+Requirement 2 says explicitly: do not embed empty text.
+## Inputs
+A chunk file containing a whitespace-only chunk.
+## Expected Output
+That chunk is skipped and the count of skipped chunks is recorded.
+
+## Test: test_rebuilding_publishes_a_new_version_and_leaves_the_old_untouched
+## Description
+Requirement 2: publish new immutable index versions rather than modifying existing artifacts.
+## Inputs
+Two consecutive builds of the same scope.
+## Expected Output
+Two version directories; the first is byte-identical afterwards.
+
+## Test: test_search_returns_the_chunk_whose_text_matches
+## Description
+An index that cannot answer a query is not evidence of anything.
+## Inputs
+An index over distinguishable chunks, queried with one of them.
+## Expected Output
+The matching chunk is the top result, with its lineage intact.

@@ -91,6 +91,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run.set_defaults(handler=_run_pipeline)
 
+    gold = subcommands.add_parser(
+        "gold",
+        help="build per-client FAISS indexes from the chunks the pipeline published",
+        description=(
+            "Embeds Silver's chunk records and writes one FAISS index per client scope "
+            "(SPEC-01 requirement 2). Requires the gold extra: uv pip install -e .[gold]. "
+            "Run the pipeline first; this reads what it published."
+        ),
+    )
+    gold.add_argument("--scope", default=None, help="build one scope id only")
+    gold.add_argument("--limit", type=int, default=None, help="stop after N scopes")
+    gold.add_argument(
+        "--model", default=None, help="override the configured embedding model"
+    )
+    gold.set_defaults(handler=_run_gold)
+
     config = subcommands.add_parser("config", help="inspect effective configuration")
     config.add_argument("action", choices=("show", "hash"))
     config.set_defaults(handler=_run_config)
@@ -130,7 +146,7 @@ def _load(args: argparse.Namespace) -> PipelineSettings:
     that would spend money record their work as pending instead when vision is unavailable,
     so a full extraction run is possible with no credential at all.
     """
-    needs_credentials = args.command not in {"discover", "config", "run"}
+    needs_credentials = args.command not in {"discover", "config", "run", "gold"}
     config_path = args.config if args.config and args.config.exists() else None
     try:
         return load_settings(config_path)
@@ -167,6 +183,37 @@ def _run_pipeline(args: argparse.Namespace, settings: PipelineSettings) -> int:
     summary = run_pipeline(settings, options)
     print(format_report(summary))
     return _EXIT_OK
+
+
+def _run_gold(args: argparse.Namespace, settings: PipelineSettings) -> int:
+    """Build the Gold layer from what the pipeline published."""
+    from ca_agent.gold.builder import (
+        GoldBuildError,
+        build_gold,
+        format_gold_report,
+        next_gold_version,
+    )
+    from ca_agent.gold.embedder import EmbeddingError, SentenceTransformerEmbedder
+
+    output_root = settings.paths.output_root
+    model = args.model or settings.embedding.model_name
+    version_id = next_gold_version(output_root)
+    _LOG.info("building gold %s with %s", version_id, model)
+
+    try:
+        summary = build_gold(
+            output_root=output_root,
+            embedder=SentenceTransformerEmbedder(model),
+            version_id=version_id,
+            scope_filter=args.scope,
+            limit=args.limit,
+        )
+    except (GoldBuildError, EmbeddingError) as error:
+        _LOG.error("gold build failed: %s", error)
+        return _EXIT_RUNTIME_ERROR
+
+    print(format_gold_report(summary))
+    return _EXIT_OK if not summary.failures else _EXIT_RUNTIME_ERROR
 
 
 def _run_vision_extract(args: argparse.Namespace, settings: PipelineSettings) -> int:

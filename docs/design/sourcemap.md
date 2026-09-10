@@ -64,6 +64,12 @@
 
 - `src/ca_agent/docgen/renderer.py` : Renders a FormatDocument as Markdown. Every section is emitted even when empty, because an omitted section cannot be told from one nobody attempted; table cells are escaped, since a pipe in a transcribed column name would reshape the table and turn a correct observation into a wrong one.
 
+- `src/ca_agent/gold/embedder.py` : Turns chunk text into vectors behind a protocol, so nothing else in Gold depends on which model produced them. The backend is injected because sentence-transformers pulls in torch, and a suite that must load a 2 GB model to check row alignment is one nobody runs. Carries model name and dimension, both required by req 2.
+
+- `src/ca_agent/gold/index.py` : Builds and reloads one FAISS index, with the vector-to-chunk mapping written as an explicit ordered sidecar rather than inferred at read time. Reload verifies index and mapping agree and refuses otherwise: an index off by one row answers confidently with the wrong client's text.
+
+- `src/ca_agent/gold/builder.py` : Builds one index per client scope from Silver's chunk records. Scope isolation is structural - a chunk whose recorded scope disagrees with the directory holding it is refused, never indexed. Empty text is skipped and counted (req 2), row order is stable across builds, and each build publishes a new version directory.
+
 ### Layer 4 - orchestration
 - `src/ca_agent/pipeline/executor.py` : Runs one file down its chosen route and returns outputs, observations for the format document, and a terminal status. The only place that knows all the readers exist, which is why it is L4. Every route returns rather than raises, because req 6 needs a record for every file and 16,596 of them cannot end on the first damaged one.
 

@@ -56,6 +56,10 @@ dependencies = [
 # are recorded as NO_COMPATIBLE_READER rather than silently skipped.
 [project.optional-dependencies]
 rar = ["rarfile>=4.2,<5"]
+# Gold layer (SPEC-01 req 2, Phase 2): local embeddings and per-scope FAISS indexes.
+# Optional because sentence-transformers pulls in torch (~2.5 GB) and nothing in the Silver
+# layer needs it; the embedder is injected, so the whole test suite runs without it.
+gold = ["faiss-cpu>=1.8,<2", "numpy>=1.26,<3", "sentence-transformers>=3.0,<6"]
 
 [project.scripts]
 ca-agent = "ca_agent.cli:main"
