@@ -196,7 +196,7 @@ def _try_passwords(reader, passwords: Sequence[str]) -> tuple[int, str]:
 
 def _classify_pages(source: Path, settings: PdfSettings, encryption: _Encryption) -> PdfResult:
     import pdfplumber
-    from pdfminer.pdfparser import PDFSyntaxError
+    from pdfminer.psexceptions import PSException
 
     observations: list[PageObservation] = []
     units: list[TextUnit] = []
@@ -215,7 +215,12 @@ def _classify_pages(source: Path, settings: PdfSettings, encryption: _Encryption
                             sequence=len(units),
                         )
                     )
-    except PDFSyntaxError as error:
+    except PSException as error:
+        # pdfminer's whole exception tree, not just PDFSyntaxError. A corpus PDF with a
+        # malformed CMap raises PSSyntaxError, which is a *sibling* of PDFSyntaxError under
+        # PSException rather than a subclass, so catching the specific type let it escape and
+        # kill a run half way through. Catching the library's base class is the only version
+        # of this that stays correct as pdfminer adds error types.
         raise _PdfFailure(ErrorCategory.CORRUPT_FILE, str(error)) from error
     except (OSError, ValueError, KeyError, IndexError, TypeError, AssertionError) as error:
         raise _PdfFailure(ErrorCategory.CORRUPT_FILE, str(error)) from error

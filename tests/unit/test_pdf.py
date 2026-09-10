@@ -276,3 +276,30 @@ def test_every_page_is_observed(tmp_path, page_count):
 
     # Assert
     assert [page.number for page in result.pages] == list(range(1, page_count + 1))
+
+
+def test_pdfminer_ps_syntax_error_is_recorded_not_propagated(tmp_path, monkeypatch):
+    """Corpus regression: a PDF with a malformed CMap raises PSSyntaxError.
+
+    That is a *sibling* of PDFSyntaxError under PSException, not a subclass, so catching the
+    specific type let it escape and kill a full-corpus run at the halfway point. The reader
+    now catches pdfminer's base exception, which is the only version that stays correct as
+    the library adds error types.
+    """
+    # Arrange
+    import pdfplumber
+    from pdfminer.psexceptions import PSSyntaxError
+
+    def _raise_ps_error(*_args, **_kwargs):
+        raise PSSyntaxError("Invalid dictionary construct: [/'Registry', b'']")
+
+    monkeypatch.setattr(pdfplumber, "open", _raise_ps_error)
+    source = files.write_bytes(tmp_path / "src" / "cmap.pdf", files.text_pdf_bytes([_LONG_LINE]))
+
+    # Act
+    result = read_pdf(source, settings=_SETTINGS)
+
+    # Assert
+    assert result.failure is not None
+    assert result.failure.category is ErrorCategory.CORRUPT_FILE
+    assert result.status is ProcessingStatus.FAILED

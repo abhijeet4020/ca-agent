@@ -10,6 +10,7 @@ like a loose one and gets its own record.
 from __future__ import annotations
 
 import logging
+import traceback
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -127,7 +128,7 @@ def run_pipeline(settings: PipelineSettings, options: RunOptions | None = None) 
 
     while queue:
         pending = queue.popleft()
-        outcome = _process_one(
+        outcome = _guarded_process(
             pending,
             paths=paths,
             settings=settings,
@@ -205,6 +206,39 @@ def _enqueue_members(queue: deque, pending: _Pending, raw_root: Path, summary: R
 
 
 # --- one unit of work ------------------------------------------------------------------------------
+
+
+def _guarded_process(pending: _Pending, **kwargs) -> ManifestEntry | None:
+    """The per-file boundary SPEC-01's exception discipline requires.
+
+    Readers map the exceptions they know about; this catches the ones nobody predicted. It is
+    the difference between one bad file costing one record and one bad file costing the whole
+    run - which is exactly what happened before it existed, when pdfminer raised a sibling of
+    the exception the PDF reader was catching and killed a run half way through 16,596 files.
+
+    Catching Exception here is deliberate and is the one place it is correct: the alternative
+    is not "a tidier failure", it is an aborted batch. Nothing is swallowed - the traceback is
+    recorded against the file and logged.
+    """
+    summary: RunSummary = kwargs["summary"]
+    try:
+        return _process_one(pending, **kwargs)
+    except Exception as error:  # noqa: BLE001 - the batch boundary; see the docstring
+        relpath = pending.source.relative_path.as_posix()
+        _LOG.exception("unexpected failure on %s", relpath)
+        summary.processed += 1
+        summary.record(
+            relpath,
+            ProcessingStatus.FAILED,
+            ErrorInfo(
+                category=ErrorCategory.UNEXPECTED_EXCEPTION,
+                message=f"{type(error).__name__}: {error}",
+                stage="worker",
+                reader=None,
+                traceback_text=traceback.format_exc(),
+            ),
+        )
+        return None
 
 
 def _process_one(

@@ -321,3 +321,32 @@ def test_the_report_summarises_without_drowning_the_operator(corpus, tmp_path):
     assert "discovered:" in report
     assert "status:" in report
     assert len(report.splitlines()) < 80, "a run report must stay readable"
+
+
+def test_an_unexpected_reader_exception_costs_one_file_not_the_run(corpus, tmp_path, monkeypatch):
+    """The per-file boundary SPEC-01's exception discipline requires.
+
+    Before it existed, pdfminer raising a sibling of the exception the PDF reader caught
+    killed a full-corpus run at 8,274 of 16,596 files. One unpredicted exception must cost
+    one record, not the batch.
+    """
+    # Arrange - an exception no reader maps, from deep inside one route
+    from ca_agent.pipeline import executor
+
+    original = executor.read_tabular
+
+    def _explode(source, **kwargs):
+        if source.name == "ledger.xlsx":
+            raise RuntimeError("something nobody predicted")
+        return original(source, **kwargs)
+
+    monkeypatch.setattr(executor, "read_tabular", _explode)
+
+    # Act
+    summary = run_pipeline(_settings(corpus, tmp_path / "out"), RunOptions())
+
+    # Assert - the run completed, and the damage is confined to the two ledger files
+    assert summary.by_error.get("UNEXPECTED_EXCEPTION") == 2
+    assert summary.by_status.get("success", 0) > 0, "every other file still processed"
+    accounted = summary.processed + summary.reused + summary.duplicates
+    assert accounted == summary.discovered + summary.archive_members
