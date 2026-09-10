@@ -14,6 +14,7 @@ import datetime as dt
 import io
 import re
 import zipfile
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -110,6 +111,38 @@ def read_tabular(
         return _read_xlsb(source, destination, settings)
     except _ReaderFailure as failure:
         return TabularResult(reader=failure.reader, failure=failure.as_error())
+
+
+def write_records_as_parquet(
+    *,
+    name: str,
+    records: Sequence[Mapping[str, object]],
+    destination: Path,
+    settings: TabularSettings,
+) -> TableObservation:
+    """Write already-parsed records to Parquet under the same rules as a worksheet.
+
+    Exposed for the structured reader (SPEC-01 req 6), which discovers record collections
+    inside JSON and XML. It routes through the same column typing as a spreadsheet so a
+    zero-padded PAN in ITR JSON is protected by exactly the rule that protects one in a
+    workbook, rather than by a second implementation that could drift.
+    """
+    columns = _record_column_names(records)
+    grid = [
+        [_cell_from_native(record.get(column)) for column in columns] for record in records
+    ]
+    return _build_table(
+        name=name, grid=grid, destination=destination, settings=settings, header=tuple(columns)
+    )
+
+
+def _record_column_names(records: Sequence[Mapping[str, object]]) -> list[str]:
+    """Union of keys in first-seen order, so column order follows the document."""
+    columns: dict[str, None] = {}
+    for record in records:
+        for key in record:
+            columns.setdefault(key, None)
+    return list(columns)
 
 
 class _ReaderFailure(Exception):
@@ -397,7 +430,14 @@ def _build_table(
     warnings: tuple[ErrorInfo, ...] = (),
     encoding: str | None = None,
     delimiter: str | None = None,
+    header: tuple[str, ...] | None = None,
 ) -> TableObservation:
+    """Convert a grid to Parquet.
+
+    ``header`` is passed when the column names are already known - JSON and XML records carry
+    their own field names - so they are used verbatim instead of being guessed from the first
+    row. Guessing would misread a record whose keys happen to look numeric, such as "2024".
+    """
     populated = [row for row in grid if any(cell.text.strip() for cell in row)]
     if not populated:
         return TableObservation(
@@ -411,11 +451,16 @@ def _build_table(
             warnings=warnings,
         )
 
-    header_detected = _looks_like_header(populated)
-    header_row = populated[0] if header_detected else []
-    body = populated[1:] if header_detected else populated
-    width = max(len(row) for row in populated)
-    names = _column_names(header_row, width)
+    if header is not None:
+        header_detected = True
+        body = populated
+        width = max(len(header), max(len(row) for row in populated))
+        names = _column_names([_Cell(label, label) for label in header], width)
+    else:
+        header_detected = _looks_like_header(populated)
+        body = populated[1:] if header_detected else populated
+        width = max(len(row) for row in populated)
+        names = _column_names(populated[0] if header_detected else [], width)
 
     columns: list[ColumnObservation] = []
     arrays: list[pa.Array] = []

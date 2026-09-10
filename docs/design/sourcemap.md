@@ -42,6 +42,8 @@
 
 - `src/ca_agent/readers/tabular.py` : Converts spreadsheets and delimited text to Parquet, one output per populated worksheet. Captures every cell as both text and native value and types a column only when every value round-trips, which is what preserves zero-padded PAN, GSTIN and account identifiers. Reports uncached formula cells and empty sheets; rows are never dropped and values never coerced.
 
+- `src/ca_agent/readers/structured.py` : Routes JSON and XML by observed structure (req 6). An array of at least three similar, flat, shallow objects is a register and becomes Parquet through the tabular reader's round-trip typing; everything else renders as `field.path: value` lines for the chunker. XML is parsed with entity resolution, DTD loading and network access disabled, with a recorded recovery fallback for the Tally exports that embed raw control characters. Units are size-bounded because a Tally register has one root child holding the whole document.
+
 - `src/ca_agent/readers/text.py` : Extracts text from docx, pptx, rtf, html, email and plain text as ordered `TextUnit`s. Recovers docx body order from the XML because python-docx exposes paragraphs and tables as separate collections, strips script and style bodies from HTML, and counts tables detected separately from tables extracted. pptx slide text is read from the package XML rather than adding python-pptx for the corpus's two presentations.
 
 - `src/ca_agent/chunking/records.py` : The chunk record the Gold layer consumes verbatim, plus the `ChunkSet` that carries what was deliberately not emitted. Every field exists so a retrieved chunk can be traced to one scope, path, archive member, unit and character range once the source document is out of hand.

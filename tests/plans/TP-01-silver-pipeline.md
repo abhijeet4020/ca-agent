@@ -673,6 +673,84 @@ A deeply nested JSON with no homogeneous collection.
 ## Expected Output
 No Parquet; chunks whose unit type is a field path.
 
+## Test: test_a_short_array_is_not_treated_as_a_collection
+## Description
+The minimum collection size stops a two-element array of options becoming a table.
+## Inputs
+An array of two homogeneous objects.
+## Expected Output
+No Parquet; the values appear as field-path text.
+
+## Test: test_an_array_of_dissimilar_objects_is_not_treated_as_a_collection
+## Description
+Key-set Jaccard is what separates a record array from a list of unrelated structures.
+## Inputs
+An array of four objects with almost no keys in common.
+## Expected Output
+No Parquet; the values appear as field-path text.
+
+## Test: test_an_array_of_scalars_is_not_treated_as_a_collection
+## Inputs
+An array of six strings.
+## Expected Output
+No Parquet, because the object-element ratio is zero.
+
+## Test: test_a_collection_of_deeply_nested_objects_is_not_flattened_to_parquet
+## Description
+Depth is capped so a Parquet table cannot silently lose nested structure.
+## Inputs
+An array of records whose values are themselves nested objects several levels deep.
+## Expected Output
+No Parquet; the records render as field-path text instead.
+
+## Test: test_field_paths_use_dotted_notation_with_list_indices
+## Description
+Requirement 6: every chunk must trace back to the field path it came from.
+## Inputs
+A nested JSON containing an array of scalars.
+## Expected Output
+Lines read as Schedule.Items.0.Amount, in document order.
+
+## Test: test_xml_elements_attributes_and_text_are_all_rendered
+## Description
+XML carries data in three places and dropping any one loses client data.
+## Inputs
+An XML element with an attribute, child elements and text.
+## Expected Output
+All three appear in the field-path rendering.
+
+## Test: test_repeated_xml_elements_become_a_collection
+## Description
+Requirement 6: XML is routed by observed structure exactly as JSON is.
+## Inputs
+An XML document with six repeated homogeneous child elements.
+## Expected Output
+Parquet is written for that field path.
+
+## Test: test_extracted_collections_are_not_duplicated_in_the_text_rendering
+## Description
+Content written to Parquet must not also be chunked and embedded, or every row is stored twice.
+## Inputs
+A document with one qualifying collection and one prose field.
+## Expected Output
+The text rendering references the collection's output but does not repeat its rows.
+
+## Test: test_malformed_json_is_reported_not_raised
+## Description
+Requirement 5 and the batch-continuity rule.
+## Inputs
+Truncated JSON bytes.
+## Expected Output
+A CORRUPT_FILE failure is returned, never raised.
+
+## Test: test_xml_external_entity_is_not_resolved
+## Description
+An XXE payload in a client file must never cause a local file read or a network fetch.
+## Inputs
+XML declaring an external entity pointing at a local file.
+## Expected Output
+The entity is not expanded and no file is read.
+
 ## Test: test_json_leading_zero_identifier_survives_flattening
 ## Description
 ITR JSON is full of zero-padded PAN and TAN values.

@@ -131,6 +131,14 @@ class StructuredSettings(_Section):
     min_object_element_ratio: float = Field(default=0.9, ge=0.0, le=1.0)
     min_scalar_leaf_ratio: float = Field(default=0.7, ge=0.0, le=1.0)
     max_element_depth: int = Field(default=2, ge=1)
+    # A unit is grouped by top-level field path, but a Tally register has a single root child
+    # holding the whole document - one corpus export renders to 56 million characters. Units are
+    # therefore split at this size so memory and chunk addressing stay bounded.
+    max_unit_characters: int = Field(default=100_000, gt=0)
+    # Some Tally exports embed raw control characters that no XML parser will accept. Retrying
+    # in recovery mode salvages real master data instead of failing the whole file; the fallback
+    # is always recorded as a warning so a recovered parse is never mistaken for a clean one.
+    recover_malformed_xml: bool = True
 
 
 class EmbeddingSettings(_Section):
