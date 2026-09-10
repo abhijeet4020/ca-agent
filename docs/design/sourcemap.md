@@ -17,6 +17,7 @@
 - `src/ca_agent/core/enums.py` : Closed vocabulary of processing status, error category and route. Prevents any layer inventing an ad-hoc outcome string, which would defeat SPEC-01's "no silent skips" guarantee.
 - `src/ca_agent/core/scope.py` : `ClientScope`, the (category, client) identity that SPEC-01 req 7 makes the unit of deduplication. Provides the slug-plus-hash `scope_id` that stops same-named clients in different categories colliding.
 - `src/ca_agent/core/model.py` : Frozen value objects carrying lineage from raw bytes to derived artifacts - `ContentHash`, `ArchiveRef`, `SourceRef`, `WorkKey`, `ProcessingRecord`, `OutputVersion`. Includes the companion-document naming rule from SPEC-01 req 4.
+- `src/ca_agent/core/text.py` : `TextUnit`, one addressable piece of a document with the reference an agent would cite it by. Lives in L0 because readers and chunking are the same layer and cannot import each other; this plus `UnitType` is the entire contract between them.
 
 ### Layer 1 - config and storage
 - `src/ca_agent/config/settings.py` : Every processing tunable, layered TOML then environment then overrides, validated with extra-forbid. Credentials arrive only from the environment as `SecretStr`. Config is kept strictly separate from runtime logic.
@@ -39,6 +40,12 @@
 - `src/ca_agent/readers/archives.py` : Expands zip/7z/gzip into a separate area, never touching the source. Depth-limited recursion, a streaming compression-ratio guard (a declared member size cannot be trusted), member-path sanitation, and per-member failure records so a locked or malformed member never stops its siblings.
 
 - `src/ca_agent/readers/tabular.py` : Converts spreadsheets and delimited text to Parquet, one output per populated worksheet. Captures every cell as both text and native value and types a column only when every value round-trips, which is what preserves zero-padded PAN, GSTIN and account identifiers. Reports uncached formula cells and empty sheets; rows are never dropped and values never coerced.
+
+- `src/ca_agent/readers/text.py` : Extracts text from docx, pptx, rtf, html, email and plain text as ordered `TextUnit`s. Recovers docx body order from the XML because python-docx exposes paragraphs and tables as separate collections, strips script and style bodies from HTML, and counts tables detected separately from tables extracted. pptx slide text is read from the package XML rather than adding python-pptx for the corpus's two presentations.
+
+- `src/ca_agent/chunking/records.py` : The chunk record the Gold layer consumes verbatim, plus the `ChunkSet` that carries what was deliberately not emitted. Every field exists so a retrieved chunk can be traced to one scope, path, archive member, unit and character range once the source document is out of hand.
+
+- `src/ca_agent/chunking/splitter.py` : Splits text units into chunk records. Character offsets are resolved by locating each chunk back in its own unit so the lineage claim is verified rather than assumed, and chunk ids are derived from scope, content, unit and configuration so a rerun over unchanged content reproduces them exactly.
 
 ### Layer 4 - orchestration
 - `src/ca_agent/pipeline/routing.py` : Maps an observed format to its processing route. Lives in L4 because choosing between routes requires knowing all of them exist, which ARCHITECTURE.md forbids an L3 module from doing. Exhaustive over FormatFamily - an unrouted family raises rather than defaulting, so SPEC-01 req 6 coverage cannot silently regress.

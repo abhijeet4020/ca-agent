@@ -245,6 +245,83 @@ def executable_bytes() -> bytes:
 # --- real spreadsheets (written with openpyxl so the bytes are genuine OOXML) --------------
 
 
+def document_bytes(
+    body: list[tuple[str, object]],
+) -> bytes:
+    """Build a genuine docx from a body description, in the order given.
+
+    ``body`` is a list of ``(kind, content)`` pairs where kind is "heading", "paragraph" or
+    "table"; a table's content is a list of rows. Order matters: python-docx exposes paragraphs
+    and tables as two separate collections, so a reader that does not walk the XML body will
+    silently reorder them, and this builder is what makes that visible.
+    """
+    import docx
+
+    document = docx.Document()
+    for kind, content in body:
+        if kind == "heading":
+            document.add_heading(str(content), level=1)
+        elif kind == "paragraph":
+            document.add_paragraph(str(content))
+        elif kind == "table":
+            rows = list(content)  # type: ignore[arg-type]
+            table = document.add_table(rows=len(rows), cols=len(rows[0]))
+            for row_index, row in enumerate(rows):
+                for column_index, value in enumerate(row):
+                    table.cell(row_index, column_index).text = str(value)
+        else:
+            raise ValueError(f"unknown docx body element {kind!r}")
+
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def presentation_bytes(slides: list[list[str]]) -> bytes:
+    """Build a pptx package carrying the given text runs, one entry per slide.
+
+    Written by hand rather than with python-pptx: the corpus holds two presentations, which
+    does not justify a dependency, so the reader parses slide XML directly and this fixture
+    has to produce that same shape.
+    """
+    drawing_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    slide_ns = "http://schemas.openxmlformats.org/presentationml/2006/main"
+    members = {
+        "[Content_Types].xml": b'<?xml version="1.0"?><Types/>',
+        "ppt/presentation.xml": b'<?xml version="1.0"?><presentation/>',
+    }
+    for index, runs in enumerate(slides, start=1):
+        paragraphs = "".join(f"<a:p><a:r><a:t>{text}</a:t></a:r></a:p>" for text in runs)
+        members[f"ppt/slides/slide{index}.xml"] = (
+            f'<?xml version="1.0"?>'
+            f'<p:sld xmlns:p="{slide_ns}" xmlns:a="{drawing_ns}">'
+            f"<p:cSld><p:spTree><p:sp><p:txBody>{paragraphs}</p:txBody></p:sp></p:spTree></p:cSld>"
+            f"</p:sld>"
+        ).encode()
+    return _zip_bytes(members)
+
+
+def email_bytes(
+    *,
+    subject: str = "GST return filed",
+    body: str = "The return for September has been filed.",
+    html_body: str | None = None,
+) -> bytes:
+    """Build a genuine RFC 5322 message. ``html_body`` alone produces an HTML-only email."""
+    from email.message import EmailMessage
+
+    message = EmailMessage()
+    message["From"] = "accounts@example.com"
+    message["To"] = "client@example.com"
+    message["Subject"] = subject
+    message["Date"] = "Tue, 01 Sep 2026 10:00:00 +0530"
+    if html_body is not None:
+        message.set_content(html_body, subtype="html")
+    else:
+        message.set_content(body)
+    return message.as_bytes()
+
+
 def workbook_bytes(
     sheets: dict[str, list[list]],
     *,

@@ -97,6 +97,23 @@ class FormatFamily(str, Enum):
     UNKNOWN = "unknown"
 
 
+class UnitType(str, Enum):
+    """What a piece of extracted text was a piece *of*.
+
+    Every chunk names the unit it came from, so an agent citing a chunk can say "page 3" or
+    "the Depreciation heading" rather than an opaque offset. The vocabulary is closed because
+    readers and the chunker sit in the same layer and cannot see each other; this enum plus
+    TextUnit is the whole contract between them.
+    """
+
+    DOCUMENT = "document"
+    PAGE = "page"
+    HEADING = "heading"
+    SHEET = "sheet"
+    TABLE = "table"
+    FIELD_PATH = "field_path"
+
+
 class Route(str, Enum):
     """Processing route chosen by signature-based reader selection (SPEC-01 req 6)."""
 

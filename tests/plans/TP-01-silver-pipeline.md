@@ -473,9 +473,85 @@ Any real socket connect or HTTP transport raises immediately.
 
 ## Group J — Text, chunking, JSON and XML (requirements 2 and 6)
 
+## Test: test_docx_paragraphs_and_tables_are_extracted_in_document_order
+## Description
+Requirement 2: extracted text must preserve the document's own reading order. python-docx
+exposes paragraphs and tables as two separate collections, so body order has to be recovered
+from the XML rather than assumed.
+## Inputs
+A docx whose body is paragraph, table, paragraph in that order.
+## Expected Output
+Units come back in body order, with the table's cell text between the two paragraphs.
+
+## Test: test_docx_headings_become_their_own_units
+## Description
+Heading structure is the natural chunk boundary for a financial statement or audit report.
+## Inputs
+A docx with two "Heading 1" paragraphs, each followed by body text.
+## Expected Output
+Two units of type HEADING whose unit_ref names the heading text.
+
+## Test: test_detected_tables_are_distinguished_from_extracted_tables
+## Description
+Requirement 2: distinguish content detection from successful extraction.
+## Inputs
+A docx with three tables where one fails to parse.
+## Expected Output
+Result reports three detected and two extracted, so the format document can report both.
+
+## Test: test_html_script_and_style_content_is_not_extracted_as_text
+## Description
+Script and style bodies are markup machinery, not document content; embedding them would
+pollute retrieval with JavaScript.
+## Inputs
+An HTML page containing a script block, a style block and one paragraph.
+## Expected Output
+Only the paragraph text appears in the extracted units.
+
+## Test: test_email_headers_and_body_are_both_extracted
+## Description
+For an email the routing headers carry as much analytical value as the body.
+## Inputs
+An .eml with From, To, Subject, Date and a plain-text body.
+## Expected Output
+A header unit carrying all four fields plus a body unit.
+
+## Test: test_email_html_only_body_is_extracted_as_text
+## Description
+Many client emails have no plain-text alternative part.
+## Inputs
+An .eml whose only body part is text/html.
+## Expected Output
+The HTML is reduced to text rather than reported as having no body.
+
+## Test: test_pptx_slides_are_extracted_without_a_new_dependency
+## Description
+Only two presentations exist in the corpus, so slide text is read from the package XML with
+lxml rather than adding python-pptx for two files.
+## Inputs
+A pptx with two slides carrying text runs.
+## Expected Output
+One unit per slide, in slide order.
+
+## Test: test_plain_text_encoding_is_detected_and_recorded
+## Description
+Corpus text files are a mix of UTF-8, UTF-16 and cp1252, and client names contain Devanagari.
+## Inputs
+A UTF-16 encoded text file containing non-ASCII characters.
+## Expected Output
+Text decodes correctly and the detected encoding is recorded on the result.
+
+## Test: test_corrupt_document_is_reported_not_raised
+## Description
+Requirement 5 and the batch-continuity rule: one damaged document cannot abort the run.
+## Inputs
+Bytes that claim to be a docx but are not a valid package.
+## Expected Output
+A failure with a CORRUPT_FILE category is returned, never raised.
+
 ## Test: test_chunk_metadata_carries_full_lineage
 ## Inputs
-A two-page text PDF inside a client scope.
+Text units from a document inside a client scope.
 ## Expected Output
 Each chunk records scope, category, client, source path, content hash, unit type, unit reference,
 sequence, and character offsets.
@@ -486,15 +562,46 @@ Requirement 2: do not embed empty text.
 ## Inputs
 A document extracting to whitespace only.
 ## Expected Output
-Zero chunks; the skipped count is recorded in the format document.
+Zero chunks; the skipped count is recorded so the format document can report it.
 
-## Test: test_detected_tables_are_distinguished_from_extracted_tables
+## Test: test_chunk_character_offsets_locate_the_text_in_its_unit
 ## Description
-Requirement 2: distinguish content detection from successful extraction.
+An offset that does not resolve back to the source text makes a chunk untraceable, which
+defeats the lineage requirement.
 ## Inputs
-A docx with three tables where one fails to parse.
+A unit long enough to split into several chunks.
 ## Expected Output
-Format document reports three detected and two extracted.
+For every chunk, unit_text[char_start:char_end] equals the chunk text.
+
+## Test: test_chunk_ids_are_deterministic_across_runs
+## Description
+Requirement 8: a rerun that reuses content must not renumber or rename its chunks.
+## Inputs
+The same units, scope and configuration chunked twice.
+## Expected Output
+Identical chunk ids in identical order.
+
+## Test: test_identical_text_in_two_scopes_produces_different_chunk_ids
+## Description
+Requirement 7: scopes are independent, so no chunk id may be shared across them.
+## Inputs
+The same text chunked under two different client scopes.
+## Expected Output
+The chunk ids differ.
+
+## Test: test_archive_member_lineage_is_carried_into_chunks
+## Description
+Requirement 12: a chunk from inside an archive must name the archive and the member.
+## Inputs
+Units from a source reference carrying an archive chain.
+## Expected Output
+Chunks record the archive id and member path.
+
+## Test: test_chunk_overlap_is_applied_between_adjacent_chunks
+## Inputs
+A unit split with a configured overlap.
+## Expected Output
+Adjacent chunks share the configured amount of text.
 
 ## Test: test_tabular_json_collection_routes_to_parquet
 ## Description
