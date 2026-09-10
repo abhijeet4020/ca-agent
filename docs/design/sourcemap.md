@@ -30,6 +30,7 @@
 - `src/ca_agent/catalog/hashing.py` : Streaming SHA-256 over fixed blocks, computed before any conversion per SPEC-01 req 7. Never loads a whole file into memory.
 - `src/ca_agent/catalog/dedup.py` : Per-scope content index. Refuses registrations from another scope, so cross-category deduplication is structurally impossible rather than merely discouraged.
 - `src/ca_agent/catalog/discovery.py` : Walks the untouched Bronze corpus into `SourceRef` values, returning unscoped and unreadable paths separately so nothing is dropped without a record.
+- `src/ca_agent/catalog/bundles.py` : Finds directories that are an unpacked desktop application rather than client records, by two co-occurring Java-application markers rather than by folder name. Lives in L2 because it is the only layer that sees directory structure; a single corpus folder holds the e-filing utility and accounts for 19 percent of all extractable text.
 - `src/ca_agent/versioning/manifest.py` : Sealed, numbered, cumulative snapshots implementing "active retrieval resolves to the latest successful version". `publish_manifest` is the only supported publish path because it cannot drop history.
 - `src/ca_agent/versioning/allocator.py` : Allocates the run ordinal once per run, giving every worker a collision-free output directory without locks or clock trust.
 - `src/ca_agent/versioning/reuse.py` : Pure decision function over a prior outcome - reuse, retry, reprocess on config change, or force. Encodes the SPEC-01 req 8 incremental rules without touching the filesystem.

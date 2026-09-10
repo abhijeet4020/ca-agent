@@ -25,6 +25,7 @@ The index format is of two types
 - ADR-011 : The vision route uses httpx directly so retry and failure paths are testable without network.
 - ADR-012 : Archive member names are sanitised for the filesystem while the original name is kept as lineage.
 - ADR-013 : The tabular reader passes bytes, not the source path, to openpyxl so its filename-extension check cannot override signature-first detection.
+- ADR-014 : An unpacked desktop application inside a client folder is excluded as NON_DATA, detected by co-occurring program markers rather than by folder name.
 
 ---
 
@@ -168,3 +169,27 @@ xlrd's compound-document directory walker raises on a corrupt stream chain, dist
 `XLRDError`/`AssertionError` cases already handled). Both are now mapped to `CORRUPT_FILE`, the
 same outcome the file would reach if it were genuinely unreadable — no different exception type
 should be allowed to abort a 16,000-file batch over one damaged workbook.
+
+## ADR-014: An unpacked desktop application inside a client folder is excluded as NON_DATA
+Validating the text route over the corpus showed that **19 percent of all extractable text is not
+client data**. One client folder, `Business Clients/SANDEEP KOTHAWALE/AY 2019-20/REVISED/ITR`,
+contains an entire unpacked copy of the Income Tax e-filing utility: jQuery, CSS, a Java
+keystore, a public-key certificate, the utility's own HTML pages, and its bundled reference
+data — `ISIN_LIST.properties` (3.3 MB, every ISIN on the exchange) and `IFSC.txt` (1.7 MB, every
+bank IFSC code in India). Chunking these would produce roughly 5,500 chunks of pure noise, cost
+real money to embed in the Gold layer, and actively degrade retrieval: a question about a
+client's income would compete against thousands of ISIN and IFSC chunks. Its 18 bundled icons
+would additionally have been sent to the paid vision route.
+
+The exclusion is by **co-occurring program markers, never by folder name**. A directory is an
+application bundle when it is the parent of a directory holding a Java `.keystore` *and* that
+same subtree also contains a `.properties` file. Both conditions are needed: clients really do
+keep their genuine filings in folders called `ITR`, and they really do hold `.cer` and `.pfx`
+digital-signature files, so neither the name nor a lone certificate can be the signal. Over the
+full corpus the rule finds exactly one directory, 62 files, 15.8 MB, with no false positives.
+
+`catalog/bundles.py` lives in L2 because directory structure is tree knowledge and the catalog
+is the only layer that walks the tree; `select_route` is a pure function of one `FormatProbe`
+and could not make this decision without becoming path-aware. **Every excluded file still gets a
+processing record and a format document** — only its route changes to `NON_DATA`, so SPEC-01
+req 6's "no silent skips" guarantee is untouched.

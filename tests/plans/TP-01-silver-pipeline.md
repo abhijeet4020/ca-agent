@@ -91,6 +91,44 @@ A configuration error is raised during load, naming the missing environment vari
 
 ## Group C — Content hashing and client-scoped deduplication
 
+## Test: test_unpacked_application_bundle_is_detected_from_its_markers
+## Description
+A client folder in the corpus holds an entire unpacked copy of the Income Tax e-filing
+utility - jQuery, a Java keystore, CSS, the utility's own HTML. Its bundled reference data
+(every ISIN, every bank IFSC code) is 19 percent of all extractable text in the corpus and is
+not client data at all. Detected by two co-occurring Java-application markers rather than by
+folder name, so a client folder that happens to be called ITR is not caught.
+## Inputs
+A directory tree containing Config/app.keystore and a .properties file.
+## Expected Output
+The directory holding Config is reported as a bundle root.
+
+## Test: test_client_folder_named_like_a_utility_is_not_treated_as_a_bundle
+## Description
+Guards the rule against the obvious false positive; clients really do have ITR folders.
+## Inputs
+A folder named ITR containing only client PDFs and spreadsheets.
+## Expected Output
+No bundle is reported.
+
+## Test: test_digital_signature_files_alone_do_not_make_a_bundle
+## Description
+Clients legitimately hold .cer and .pfx digital-signature files, so only a Java keystore
+counts as a program marker.
+## Inputs
+A client folder containing a .cer and a .pfx file.
+## Expected Output
+No bundle is reported.
+
+## Test: test_every_file_under_a_bundle_is_excluded_including_images
+## Description
+Exclusion covers the whole subtree, not just the text files: the bundle's 18 icons would
+otherwise be sent to the paid vision route.
+## Inputs
+A bundle containing text, an image and an archive.
+## Expected Output
+All three are reported as inside the bundle.
+
 ## Test: test_identical_bytes_in_two_categories_do_not_deduplicate
 ## Description
 Requirement 7: every category/client folder is an independent dedup scope.
