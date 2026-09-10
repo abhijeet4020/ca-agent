@@ -111,7 +111,7 @@ def _record(
             scope_id=scope.scope_id,
             content_hexdigest=content.hexdigest,
             extraction_config_version=extraction_config_version,
-            unit_ref=unit.unit_ref,
+            unit_sequence=unit.sequence,
             seq=seq,
         ),
         client_scope_id=scope.scope_id,
@@ -121,6 +121,7 @@ def _record(
         content_sha256=content.hexdigest,
         unit_type=unit.unit_type,
         unit_ref=unit.unit_ref,
+        unit_sequence=unit.sequence,
         seq=seq,
         char_start=start,
         char_end=start + len(text),
@@ -137,7 +138,7 @@ def _chunk_id(
     scope_id: str,
     content_hexdigest: str,
     extraction_config_version: str,
-    unit_ref: str,
+    unit_sequence: int,
     seq: int,
 ) -> str:
     """Derive a stable id.
@@ -145,8 +146,10 @@ def _chunk_id(
     The source path is deliberately excluded: req 7 has duplicate files within a scope share
     one set of outputs, so two paths holding identical bytes must produce identical chunk ids.
     The scope is included for the opposite reason - identical bytes in two scopes must not.
+    The unit's sequence is used rather than its ref because a ref is a human citation and is
+    routinely repeated within one document.
     """
     material = "\x00".join(
-        (scope_id, content_hexdigest, extraction_config_version, unit_ref, str(seq))
+        (scope_id, content_hexdigest, extraction_config_version, str(unit_sequence), str(seq))
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:_CHUNK_ID_LENGTH]

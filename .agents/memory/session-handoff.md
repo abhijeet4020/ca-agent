@@ -1,7 +1,7 @@
 # Session Handoff — SPEC-01 Phase 1 (Silver layer)
 
 **Updated:** 2026-09-10
-**Branch:** `master` at `ec821b5` (step 7 committed, **not yet pushed**)
+**Branch:** `master`, pushed
 **Read first:** `.agents/plans/PHASE-01-silver-layer-plan.md`, then `docs/design/ADR.md` and
 `docs/design/sourcemap.md`
 
@@ -28,7 +28,7 @@ Phase 1 implements the **Silver layer** of SPEC-01. Steps 0–6 of 13 are done a
 | 4 | Signature-first format detection and the routing table | Validated |
 | 5 | Archive expansion: depth-3 recursion, bomb guards, path sanitation | Validated |
 | 6 | Tabular → Parquet with round-trip typing | Validated |
-| 7 | Text extraction and chunking | **In progress** |
+| 7 | Text extraction and chunking | Validated |
 | 8 | JSON/XML structural routing | Not started |
 | 9 | PDF text-vs-scanned classification | Not started |
 | 10 | Vision extraction route | Not started |
@@ -68,10 +68,14 @@ full workbook read; disable it for large batch runs.
 
 ---
 
-## Step 7 — implemented, corpus run outstanding
+## Step 7 result (2026-09-10)
 
-`readers/text.py` (docx, pptx, rtf, html, email, plain text) and the `chunking/` package are
-written, unit-tested and committed. 313 tests pass, ruff clean.
+16,596 files scanned, 62 excluded as an application bundle, 760 routed to text →
+**760 extracted, 0 failures, 0 unhandled exceptions, 0 offset mismatches**, in 21 seconds.
+2,089 units and 4.6M characters became 7,026 chunks; every chunk's character offsets were
+verified against the real source text, not just in unit tests. 820 tables detected, 820
+extracted. 15 documents contain no text at all and are recorded as such. Readers used:
+python-docx 353, charset-normalizer 327, lxml.html 68, striprtf 10, lxml-pptx 2.
 
 Design points worth not relitigating:
 
@@ -85,17 +89,36 @@ Design points worth not relitigating:
 - Chunk offsets are resolved by locating each chunk back in its own unit, not accumulated, so
   the lineage claim is verified; an unlocatable chunk raises `ChunkingError` rather than
   recording a false offset.
-- Chunk ids derive from scope, content hash, unit ref, seq and the config fingerprint - not a
-  counter - so reruns reproduce them (req 8) while identical bytes in two scopes stay distinct
-  (req 7).
+- Chunk ids derive from scope, content hash, unit sequence, seq and the config fingerprint -
+  not a counter - so reruns reproduce them (req 8) while identical bytes in two scopes stay
+  distinct (req 7).
 - Legacy `.doc` (50 files) still routes to `NO_COMPATIBLE_READER` pending the LibreOffice
   decision in open items.
 
-**What remains: the full-corpus validation run.** Script is at
-`<scratchpad>/corpus_validate_text.py`; it takes an optional file-limit argument. A 1,500-file
-smoke run was clean (118 documents, 0 failures, 7,876 chunks, offsets verified against source).
+**The bug the corpus run found:** `unit_ref` is a human citation, not an identifier, and repeats
+heavily in real documents — one bank statement extracts to 784 units carrying only 167 distinct
+refs, with the heading "Receipt" appearing 250 times. A chunk naming only a ref plus an offset
+could not be resolved to one place, defeating the lineage guarantee. `ChunkRecord` now carries
+`unit_sequence`, and the chunk id derives from it rather than from the ref. 510 offset
+mismatches across 3 documents went to zero.
 
-## ADR-014 came out of that smoke run
+---
+
+## Resume here
+
+**Step 8 — JSON and XML routed by observed structure** (SPEC-01 req 6). The design is in the
+approved plan: an array node is a tabular collection iff length >= 3, >= 90% object elements,
+mean pairwise key-set Jaccard >= 0.8, >= 70% scalar leaves and inner depth <= 2. Those flatten
+to dotted field paths with the **same round-trip typing rule as tabular** - ITR JSON is full of
+zero-padded PANs and TANs. Everything else renders as `field.path: value` lines in document
+order and feeds the existing chunker with `unit_type=FIELD_PATH`. `StructuredSettings` already
+holds the thresholds. Corpus counts: 248 `json`, 155 `xml`.
+
+Test-plan entries for step 8 already exist in TP-01 Group J
+(`test_tabular_json_collection_routes_to_parquet`, `test_document_like_json_routes_to_chunking`,
+`test_json_leading_zero_identifier_survives_flattening`).
+
+## ADR-014 came out of the step-7 smoke run
 
 19 percent of all extractable text turned out not to be client data:
 `Business Clients/SANDEEP KOTHAWALE/AY 2019-20/REVISED/ITR` is a whole unpacked copy of the
@@ -130,6 +153,10 @@ would have:
 - **`csv.Error`** on embedded newlines in unquoted fields.
 - **`openpyxl` rejects a valid workbook on its filename alone**, silently defeating signature-first
   detection for every misnamed spreadsheet in the corpus.
+- **A document heading repeats 250 times**, so a chunk citing only its heading and an offset
+  named no single place until `unit_sequence` was added.
+- **A client folder holds an entire unpacked desktop application**, 19 percent of all
+  extractable text (ADR-014).
 
 Do not mark a step done until it has run over the real corpus. Corpus validation scripts go in the
 scratchpad and **must print live progress** — see

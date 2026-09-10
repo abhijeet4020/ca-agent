@@ -28,6 +28,10 @@ class ChunkRecord:
     content_sha256: str
     unit_type: UnitType
     unit_ref: str
+    #: Position of the source unit in its document. Required because unit_ref is a human
+    #: citation, not an identifier, and is routinely repeated - one corpus bank statement has
+    #: the heading "Receipt" 250 times, so a ref plus an offset does not name one place.
+    unit_sequence: int
     seq: int
     char_start: int
     char_end: int
@@ -56,6 +60,7 @@ class ChunkRecord:
             "content_sha256": self.content_sha256,
             "unit_type": self.unit_type.value,
             "unit_ref": self.unit_ref,
+            "unit_sequence": self.unit_sequence,
             "seq": self.seq,
             "char_start": self.char_start,
             "char_end": self.char_end,

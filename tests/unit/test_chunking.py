@@ -107,6 +107,49 @@ def test_loose_file_chunks_record_no_archive_lineage():
     assert chunk.member_path is None
 
 
+def test_repeated_unit_refs_stay_individually_addressable():
+    """Corpus regression: unit_ref is a human citation, not an identifier.
+
+    One corpus bank statement extracts to 784 units carrying only 167 distinct refs - the
+    heading "Receipt" appears 250 times. A chunk naming only a ref and an offset could not be
+    resolved back to one place, which is exactly what the lineage fields exist to guarantee.
+    """
+    # Arrange - two different sections that happen to share a heading
+    units = (
+        TextUnit(unit_type=UnitType.HEADING, unit_ref="Receipt", text="First receipt.", sequence=0),
+        TextUnit(unit_type=UnitType.HEADING, unit_ref="Receipt", text="Second receipt.", sequence=1),
+    )
+
+    # Act
+    chunks = _chunk(units).chunks
+
+    # Assert - the ref is shared, but the record still names exactly one unit
+    assert [chunk.unit_ref for chunk in chunks] == ["Receipt", "Receipt"]
+    assert [chunk.unit_sequence for chunk in chunks] == [0, 1]
+    assert chunks[0].chunk_id != chunks[1].chunk_id
+
+
+def test_offsets_resolve_against_the_unit_named_by_unit_sequence():
+    # Arrange - the offsets of the second unit are meaningless against the first
+    units = (
+        TextUnit(unit_type=UnitType.HEADING, unit_ref="Receipt", text="short", sequence=0),
+        TextUnit(
+            unit_type=UnitType.HEADING,
+            unit_ref="Receipt",
+            text="a much longer second receipt body",
+            sequence=1,
+        ),
+    )
+
+    # Act
+    chunks = _chunk(units).chunks
+
+    # Assert - each chunk resolves against the unit its sequence names
+    for chunk in chunks:
+        unit = units[chunk.unit_sequence]
+        assert unit.text[chunk.char_start : chunk.char_end] == chunk.text
+
+
 # --- offsets and ordering ----------------------------------------------------------------
 
 

@@ -602,6 +602,24 @@ A document extracting to whitespace only.
 ## Expected Output
 Zero chunks; the skipped count is recorded so the format document can report it.
 
+## Test: test_repeated_unit_refs_stay_individually_addressable
+## Description
+Corpus regression: unit_ref is a human citation, not an identifier. One corpus bank statement
+extracts to 784 units carrying only 167 distinct refs, with the heading "Receipt" repeated 250
+times, so a chunk naming only a ref and an offset cannot be resolved back to one place.
+## Inputs
+Two units sharing a unit_ref but holding different text.
+## Expected Output
+Chunks carry distinct unit_sequence values and distinct chunk ids.
+
+## Test: test_offsets_resolve_against_the_unit_named_by_unit_sequence
+## Description
+The offsets of one unit are meaningless when applied to another.
+## Inputs
+Two units sharing a unit_ref, of very different lengths.
+## Expected Output
+Each chunk's offsets resolve correctly against the unit its unit_sequence names.
+
 ## Test: test_chunk_character_offsets_locate_the_text_in_its_unit
 ## Description
 An offset that does not resolve back to the source text makes a chunk untraceable, which
