@@ -30,7 +30,7 @@ Phase 1 implements the **Silver layer** of SPEC-01. Steps 0–6 of 13 are done a
 | 6 | Tabular → Parquet with round-trip typing | Validated |
 | 7 | Text extraction and chunking | Validated |
 | 8 | JSON/XML structural routing | Validated |
-| 9 | PDF text-vs-scanned classification | Not started |
+| 9 | PDF text-vs-scanned classification | **Implemented; full corpus run outstanding** |
 | 10 | Vision extraction route | Not started |
 | 11 | Per-file format documents | Not started |
 | 12 | Pipeline orchestration and full CLI | Not started |
@@ -127,19 +127,36 @@ Two fixes the corpus run forced:
   files of real ledger and item master data; failures fell from 9 to 2. A recovered parse always
   carries a warning so it is never mistaken for a clean one.
 
+## Step 9 — implemented, full corpus run outstanding
+
+`readers/pdf.py` classifies each page from measured non-whitespace characters and image
+coverage, extracts native text for TEXT pages as `UnitType.PAGE` units, and answers
+`requires_vision()` without making any call. All thresholds come from `PdfSettings`. Uses
+`pypdf` for encryption, `pdfplumber` for text - **never PyMuPDF** (ADR-010, AGPL).
+
+**A 700-file sample says the vision route is far cheaper than the plan assumed: 97.7% of pages
+carry native text, and only 2.2% (57 of 2,548) need a vision call.** The corpus is mostly
+digital filings, not scans. Confirm with the full run before step 10 spends anything.
+
+Two things the sample established, both verified independently across all 6,685 PDFs:
+
+- **200 PDFs are owner-restricted only** and open with an empty password. ADR-008 is doing real
+  work; a naive implementation would have discarded 200 ITR-V and TIS filings.
+- **352 PDFs are genuinely locked**, and 213 of those are AIS/TIS. That produced ADR-016.
+
+Also worth measuring in the full run: a `MIXED` page with **no detectable image** still routes
+to vision, which is the spec's literal fallback but buys a call with nothing to OCR. The sample
+saw 6 of 57. If the full run shows that share is large, it is worth raising.
+
+**Run it with:** `uv run python -u <scratchpad>/corpus_validate_pdf.py` (optional file-limit
+argument). Expect roughly 1.5-2.5 hours - pdfplumber is the slowest thing in the pipeline at
+about 1.4 PDFs/second. It writes no output files.
+
 ## Resume here
 
-**Step 9 — PDF text-versus-scanned classification** (SPEC-01 req 2 vs req 3). The design is in
-the approved plan: per page, `TEXT` if >= 120 non-whitespace chars, `SCANNED` if < 120 chars and
-image coverage >= 50%, `EMPTY` if < 20 chars and coverage < 5%, else `MIXED` treated as scanned.
-All pages `TEXT` -> `PDF_TEXT`; any `SCANNED`/`MIXED` -> `PDF_VISION`. `PdfSettings` already
-holds every threshold. Use `pypdf` for structure and encryption, `pdfplumber` for text with
-layout, `pypdfium2` for rasterisation - **never PyMuPDF** (ADR-010, AGPL). PDF pages become
-`UnitType.PAGE` units and feed the step-7 chunker unchanged.
-
-This is the corpus's biggest route by far: **6,685 PDFs**, plus the owner-password-only case in
-ADR-008 that governs hundreds of ITR-V and TIS filings. Step 9 also decides how much step 10
-costs, so run `discover` and report the scanned-page count before any paid vision call.
+**Step 10 — the vision route**, once the step-9 run confirms the page count. `httpx` not the
+OpenAI SDK (ADR-011), `pypdfium2` for rasterisation (ADR-010). `sample_vision_script.py` in the
+repo root is the user's reference implementation; follow the ADRs where it conflicts.
 
 Step 14 (dedicated Tally route, ADR-015) is scheduled after the existing Phase 1 steps.
 
