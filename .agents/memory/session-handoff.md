@@ -1,7 +1,7 @@
 # Session Handoff — SPEC-01 Phase 1 (Silver layer)
 
 **Updated:** 2026-09-10
-**Branch:** `master`, pushed
+**Branch:** `master`, pushed. 419 tests pass, ruff clean.
 **Read first:** `.agents/plans/PHASE-01-silver-layer-plan.md`, then `docs/design/ADR.md` and
 `docs/design/sourcemap.md`
 
@@ -31,10 +31,10 @@ Phase 1 implements the **Silver layer** of SPEC-01. Steps 0–6 of 13 are done a
 | 7 | Text extraction and chunking | Validated |
 | 8 | JSON/XML structural routing | Validated |
 | 9 | PDF text-vs-scanned classification | **Implemented; full corpus run outstanding** |
-| 10 | Vision extraction route | **Implemented; unit-tested, no live API call yet** |
-| 11 | Per-file format documents | Not started |
-| 12 | Pipeline orchestration and full CLI | Not started |
-| 13 | Integration tests and the full corpus run | Not started |
+| 10 | Vision extraction route | Implemented; no live API call yet |
+| 11 | Per-file format documents | Validated |
+| 12 | Pipeline orchestration and full CLI | Implemented; smoke-run on 250 real files |
+| 13 | Integration tests and the full corpus run | **Tests pass; the full run is outstanding** |
 | 14 | Dedicated Tally XML voucher route (ADR-015, added 2026-09-10) | Not started |
 
 "Validated" means the step was run over all 16,596 real corpus files, not just unit-tested.
@@ -180,15 +180,53 @@ API details come from `.env` (`CAAGENT__VISION__BASE_URL`, `__MODEL`, `__API_KEY
 **What has not happened: a single real API call.** Point `vision-extract` at one corpus scan
 first and read the output before letting any batch loose.
 
+## Steps 11-13 (2026-09-10)
+
+**11 - format documents.** `docgen/` renders the req-4 companion document. docgen and readers
+are the same layer, so the orchestrator translates whichever reader ran into a neutral
+`FormatDocument`; that indirection is exactly what keeps readers free of document-writing code.
+Absence is the explicit `unknown` string and empty sections are still rendered, because an
+omitted section cannot be told from one nobody attempted.
+
+**12 - orchestration.** `pipeline/executor.py` runs one file down its route;
+`pipeline/orchestrator.py` is the run. The ordering *is* the immutability contract: one run
+ordinal up front so every output directory is unique by construction, `record.json` written
+last so a directory without one is an abandoned attempt, manifests sealed only at the end so a
+crash leaves the previous run active. Archive members re-enter the same loop.
+
+One design correction worth keeping: **every non-success status must carry an error explaining
+it.** `ProcessingRecord` already enforced this and it was right to - a partial result that does
+not say why is barely better than a silent skip. Three routes were putting the reason in a
+warning instead.
+
+**13 - integration tests.** 16 end-to-end tests over a miniature two-category corpus. The
+load-bearing one hashes every file in the output tree before and after a rerun; Windows mtime
+and ACLs are not a sound basis for a durability assertion.
+
+**Verified on 250 real corpus files.** Every file accounted for, 5,264 chunks. A rerun reused
+188 and reprocessed exactly the 56 locked-and-partial files the retry policy names - the reuse
+contract behaving correctly on real data, not just fixtures.
+
 ## Resume here
 
-**Step 11 — per-file format documents** (`*.format.md`, SPEC-01 req 4), then 12 (pipeline and
-CLI), then 13 (integration plus the full run). `docgen` is L3 and cannot import `readers`,
-which is why every reader already returns descriptive value objects instead of writing its own
-document.
+**The full corpus run is the remaining Phase 1 deliverable.**
 
-Also outstanding: the **step-9 full corpus PDF run** (see above), which produces the real
-vision budget. Step 14 (dedicated Tally route, ADR-015) comes after the Phase 1 steps.
+    .\environment.bat
+    uv run python -u src\main.py run
+
+Expect several hours: PDFs dominate at roughly 1.4 files/second and there are 6,685 of them.
+Output goes to `data/` by default (gitignored); set `CAAGENT__PATHS__OUTPUT_ROOT` to put it
+elsewhere. 250 files produced 30 MB, so budget on the order of 2 GB for the corpus and check
+free space first - a previous run silently hit `No space left on device` inside the reader.
+
+The run is resumable by design: re-invoking it reuses everything already settled, so a
+Ctrl-C costs only the file in flight.
+
+Useful flags: `--limit N`, `--category "<name>"`, `--dry-run` (decide everything, write
+nothing), `--force` (reprocess unchanged content).
+
+Still outstanding beyond that: the **step-9 PDF corpus report** (vision budget), a **first real
+vision call** before any batch, and **step 14** (dedicated Tally route, ADR-015).
 
 ## ADR-014 came out of the step-7 smoke run
 
