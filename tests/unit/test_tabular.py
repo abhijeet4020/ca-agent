@@ -242,6 +242,26 @@ def test_formula_cell_without_cached_value_is_reported(tmp_path):
     assert "C2" in warnings[0].message
 
 
+def test_formula_audit_can_be_disabled_for_faster_batch_runs(tmp_path):
+    # Arrange - the audit reopens the workbook a second time; batch runs may disable it
+    payload = files.workbook_bytes(
+        {"Data": [["A", "B"], [1, 2]]}, formulas={"Data": {"C2": "=A2+B2"}}
+    )
+    settings = TabularSettings(audit_uncached_formulas=False)
+    source = files.write_bytes(tmp_path / "src" / "formula.xlsx", payload)
+
+    # Act
+    result = read_tabular(
+        source, destination=tmp_path / "out", settings=settings, family=FormatFamily.SPREADSHEET_OOXML
+    )
+    table = _table(result, "Data")
+
+    # Assert - no crash, no formula warning, and data still converts
+    assert result.failure is None
+    assert table.warnings == ()
+    assert table.row_count > 0
+
+
 def test_macro_enabled_workbook_is_read_without_executing_macros(tmp_path):
     # Arrange - a real xlsm carrying a vbaProject part
     payload = files.workbook_bytes({"Data": [["A"], [1]]})
@@ -338,6 +358,25 @@ def test_non_tabular_family_is_rejected(tmp_path, family):
         _convert(tmp_path, "wrong.bin", b"data", family)
 
 
+def test_ooxml_content_with_a_misleading_xls_extension_is_still_read(tmp_path):
+    """openpyxl's load_workbook validates the *filename* extension before touching content and
+
+    refuses anything not already named .xlsx/.xlsm/.xltx/.xltm - real corpus files routinely
+    fail this because the source application saved genuine OOXML zips under a stale .xls or
+    .xlk extension. Detection already proved these are OOXML from the zip signature, so the
+    reader must not let openpyxl's extension check override that.
+    """
+    # Arrange
+    payload = files.workbook_bytes({"Data": [["A"], [1]]})
+
+    # Act - the file on disk is named .xls even though the bytes are a real OOXML workbook
+    result = _convert(tmp_path, "misnamed.xls", payload, family=FormatFamily.SPREADSHEET_OOXML)
+
+    # Assert
+    assert result.failure is None
+    assert _table(result, "Data").row_count == 1
+
+
 # --- regressions found by converting the real corpus -------------------------------------
 
 
@@ -354,6 +393,62 @@ def test_xlrd_assertion_error_is_recorded_not_propagated(tmp_path, monkeypatch):
         raise AssertionError()
 
     monkeypatch.setattr(xlrd, "open_workbook", _assert_fail)
+    source = files.write_bytes(tmp_path / "src" / "old.xls", files.legacy_xls_bytes())
+
+    # Act
+    result = read_tabular(
+        source,
+        destination=tmp_path / "out",
+        settings=_SETTINGS,
+        family=FormatFamily.SPREADSHEET_BIFF,
+    )
+
+    # Assert
+    assert result.failure is not None
+    assert result.failure.category is ErrorCategory.CORRUPT_FILE
+    assert result.tables == ()
+
+
+def test_ooxml_namespace_syntax_error_is_recorded_not_propagated(tmp_path, monkeypatch):
+    """A handful of corpus workbooks (GST-portal exports) declare an MS-extension namespace
+
+    prefix such as x15 on an element but never define it. lxml raises XMLSyntaxError, which is
+    not a ValueError subclass, so it escaped the existing except clause and aborted the batch.
+    """
+    # Arrange
+    import openpyxl
+    from lxml import etree
+
+    def _raise_syntax_error(*_args, **_kwargs):
+        raise etree.XMLSyntaxError("Namespace prefix x15 on workbookPr is not defined", 0, 2, 843)
+
+    monkeypatch.setattr(openpyxl, "load_workbook", _raise_syntax_error)
+    source = files.write_bytes(tmp_path / "src" / "bad_ns.xlsx", files.workbook_bytes({"Data": [["A"], [1]]}))
+
+    # Act
+    result = read_tabular(
+        source, destination=tmp_path / "out", settings=_SETTINGS, family=FormatFamily.SPREADSHEET_OOXML
+    )
+
+    # Assert
+    assert result.failure is not None
+    assert result.failure.category is ErrorCategory.CORRUPT_FILE
+    assert result.tables == ()
+
+
+def test_xlrd_compdoc_error_is_recorded_not_propagated(tmp_path, monkeypatch):
+    """xlrd's compound-document directory walker raises CompDocError (not XLRDError) when a
+
+    corpus workbook's stream chain is corrupt. It is a plain Exception subclass, so it also
+    escaped the existing except clause and aborted the batch, the same way AssertionError did.
+    """
+    # Arrange
+    import xlrd
+
+    def _raise_compdoc_error(_source):
+        raise xlrd.compdoc.CompDocError("Workbook corruption: seen[2] == 4")
+
+    monkeypatch.setattr(xlrd, "open_workbook", _raise_compdoc_error)
     source = files.write_bytes(tmp_path / "src" / "old.xls", files.legacy_xls_bytes())
 
     # Act

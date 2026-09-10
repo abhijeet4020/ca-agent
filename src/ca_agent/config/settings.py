@@ -50,6 +50,10 @@ class TabularSettings(_Section):
     parquet_compression: str = "snappy"
     csv_delimiter_candidates: tuple[str, ...] = (",", ";", "\t", "|")
     csv_sniff_bytes: int = Field(default=8192, gt=0)
+    # The audit reopens and re-walks the whole workbook a second time (data_only=False) to find
+    # formula cells with no cached value. That doubles per-file cost across a large batch; disable
+    # it to trade the FORMULA_NO_CACHED_VALUE warning for faster runs.
+    audit_uncached_formulas: bool = True
 
 
 class TextSettings(_Section):

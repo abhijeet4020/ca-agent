@@ -344,6 +344,15 @@ A column mixing an integer, a word, and a date.
 ## Expected Output
 Column stays string; the format document records rejected type inference with a reason.
 
+## Test: test_formula_audit_can_be_disabled_for_faster_batch_runs
+## Description
+The uncached-formula audit reopens and re-walks the whole workbook a second time; a batch run
+over thousands of files must be able to trade that warning for speed.
+## Inputs
+A workbook with an uncached formula cell, converted with audit_uncached_formulas=False.
+## Expected Output
+Conversion succeeds with no FORMULA_NO_CACHED_VALUE warning and no second workbook read.
+
 ## Test: test_every_populated_worksheet_becomes_its_own_parquet
 ## Description
 Requirement 1: each populated worksheet or distinct table is a separate Parquet output.
@@ -367,6 +376,34 @@ Requirement 1: do not silently discard rows.
 A sheet with one unparseable cell.
 ## Expected Output
 Parquet row count equals source row count; the offending cell is preserved as raw text.
+
+## Test: test_ooxml_namespace_syntax_error_is_recorded_not_propagated
+## Description
+Corpus regression: some GST-portal-exported workbooks declare an undefined MS-extension
+namespace prefix; lxml's XMLSyntaxError is not a ValueError subclass and escaped uncaught.
+## Inputs
+An OOXML load that raises lxml.etree.XMLSyntaxError.
+## Expected Output
+A CORRUPT_FILE failure is returned, never raised; the batch continues.
+
+## Test: test_xlrd_compdoc_error_is_recorded_not_propagated
+## Description
+Corpus regression: xlrd's compound-document walker raises CompDocError, a plain Exception
+subclass distinct from XLRDError, on a workbook with a corrupt stream chain.
+## Inputs
+A BIFF load that raises xlrd.compdoc.CompDocError.
+## Expected Output
+A CORRUPT_FILE failure is returned, never raised; the batch continues.
+
+## Test: test_ooxml_content_with_a_misleading_xls_extension_is_still_read
+## Description
+Corpus regression: openpyxl's load_workbook validates the filename extension before touching
+content and refuses a real OOXML workbook saved under a stale .xls/.xlk name, defeating the
+signature-first detection SPEC-01 requires. The reader must read from bytes, not the path.
+## Inputs
+A genuine OOXML workbook payload written to a file named "misnamed.xls".
+## Expected Output
+Conversion succeeds; no CORRUPT_FILE failure from openpyxl's own extension check.
 
 ---
 

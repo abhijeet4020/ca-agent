@@ -130,24 +130,42 @@ class _ReaderFailure(Exception):
 
 
 def _read_ooxml(source: Path, destination: Path, settings: TabularSettings) -> TabularResult:
+    from lxml.etree import XMLSyntaxError
     from openpyxl import load_workbook
     from openpyxl.utils.exceptions import InvalidFileException
 
     reader = "openpyxl"
     try:
+        payload = source.read_bytes()
+    except OSError as error:
+        raise _ReaderFailure(reader, ErrorCategory.FILE_ACCESS_ERROR, str(error)) from error
+
+    try:
+        # A BytesIO buffer, not the path, is passed to openpyxl: load_workbook validates the
+        # *filename extension* before inspecting content and refuses anything not already named
+        # .xlsx/.xlsm/.xltx/.xltm - but detection already proved this is OOXML from its signature
+        # (corpus finding: ~18% of sampled .xls are actually OOXML zips misnamed by the source
+        # application), so the extension must not gate whether the content can be read.
         # data_only gives stored results rather than formulas; keep_vba stays off so no macro
         # is ever carried into the process. read_only streams rather than loading the workbook.
-        workbook = load_workbook(source, read_only=True, data_only=True, keep_vba=False)
+        workbook = load_workbook(io.BytesIO(payload), read_only=True, data_only=True, keep_vba=False)
     except InvalidFileException as error:
         raise _ReaderFailure(reader, ErrorCategory.CORRUPT_FILE, str(error)) from error
     except zipfile.BadZipFile as error:
+        raise _ReaderFailure(reader, ErrorCategory.CORRUPT_FILE, str(error)) from error
+    except XMLSyntaxError as error:
+        # A handful of corpus workbooks (GST-portal exports) declare an MS-extension namespace
+        # prefix such as x15 on an element but never define it - lxml raises XMLSyntaxError,
+        # which is not a ValueError subclass, so it was escaping uncaught and aborting the batch.
         raise _ReaderFailure(reader, ErrorCategory.CORRUPT_FILE, str(error)) from error
     except (OSError, KeyError, ValueError) as error:
         raise _ReaderFailure(reader, ErrorCategory.CORRUPT_FILE, str(error)) from error
 
     tables: list[TableObservation] = []
     try:
-        formula_cells = _uncached_formula_cells(source)
+        formula_cells = (
+            _uncached_formula_cells(payload) if settings.audit_uncached_formulas else {}
+        )
         for sheet in workbook.worksheets:
             grid = [
                 [_cell_from_native(value) for value in row]
@@ -169,18 +187,21 @@ def _read_ooxml(source: Path, destination: Path, settings: TabularSettings) -> T
     return TabularResult(reader=reader, tables=tuple(tables))
 
 
-def _uncached_formula_cells(source: Path) -> dict[str, tuple[str, ...]]:
+def _uncached_formula_cells(payload: bytes) -> dict[str, tuple[str, ...]]:
     """Find formula cells whose cached result is absent (SPEC-01 req 1).
 
     Requires a second pass because ``data_only=True`` cannot distinguish an empty cell from a
-    formula Excel never calculated - both read as None.
+    formula Excel never calculated - both read as None. Takes the already-read bytes, both to
+    avoid a second disk read and, more importantly, so this pass is exempt from openpyxl's
+    filename-extension check the same way the value pass is.
     """
+    from lxml.etree import XMLSyntaxError
     from openpyxl import load_workbook
 
     found: dict[str, tuple[str, ...]] = {}
     try:
-        workbook = load_workbook(source, read_only=True, data_only=False, keep_vba=False)
-    except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+        workbook = load_workbook(io.BytesIO(payload), read_only=True, data_only=False, keep_vba=False)
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile, XMLSyntaxError):
         # The value pass already succeeded; losing only the formula audit is acceptable.
         return found
 
@@ -226,6 +247,12 @@ def _read_biff(source: Path, destination: Path, settings: TabularSettings) -> Ta
         # xlrd validates defined-name formulas with bare asserts and raises AssertionError on
         # a malformed BIFF record rather than a typed exception. Corpus files trigger this, and
         # letting it escape would abort a 16,000-file batch over one damaged workbook.
+        raise _ReaderFailure(
+            reader, ErrorCategory.CORRUPT_FILE, f"xlrd rejected the workbook structure: {error}"
+        ) from error
+    except xlrd.compdoc.CompDocError as error:
+        # A separate structural check from the one above: xlrd's compound-document directory
+        # walker raises this (not XLRDError) when a corpus workbook's stream chain is corrupt.
         raise _ReaderFailure(
             reader, ErrorCategory.CORRUPT_FILE, f"xlrd rejected the workbook structure: {error}"
         ) from error

@@ -24,6 +24,7 @@ The index format is of two types
 - ADR-010 : PyMuPDF is rejected as AGPL-3.0; pypdf, pdfplumber and pypdfium2 are used instead.
 - ADR-011 : The vision route uses httpx directly so retry and failure paths are testable without network.
 - ADR-012 : Archive member names are sanitised for the filesystem while the original name is kept as lineage.
+- ADR-013 : The tabular reader passes bytes, not the source path, to openpyxl so its filename-extension check cannot override signature-first detection.
 
 ---
 
@@ -144,3 +145,26 @@ One case is still rejected outright rather than sanitised: a single letter follo
 (`a:b.txt`). Windows parses that as a drive specifier, so sanitising the colon would mask a genuine
 attempt to escape the extraction root. Cleanup after any failed write is now best-effort and can
 never raise, because SPEC-01 req 7 requires that siblings continue.
+
+## ADR-013: The tabular reader passes bytes, not the source path, to openpyxl
+Converting the full corpus of ~3,000 tabular files surfaced a reader bug, not a data problem:
+`openpyxl.load_workbook` validates the **filename extension** before it inspects any content, and
+raises `InvalidFileException` for anything not already named `.xlsx`/`.xlsm`/`.xltx`/`.xltm` — even
+a byte-for-byte valid OOXML workbook. Detection (ADR-007) already classifies files by signature
+specifically because extensions lie at scale in this corpus (~18% of sampled `.xls` are genuine
+OOXML zips saved under a stale name); calling `load_workbook(path, ...)` reintroduced the exact
+extension dependency detection was built to remove, and it failed every one of those files with a
+misleading "old .xls format" error. The fix reads the file once and hands openpyxl a `BytesIO`
+buffer instead of the path — openpyxl's extension check only applies to path/string arguments, so
+it never sees the misleading name. The formula-audit second pass (ADR-009's round-trip typing
+needs it to find uncached formula cells) takes the same bytes, which also removes a second disk
+read.
+
+The same run surfaced two more corpus-specific exceptions escaping the existing `_EXCEPTION_MAP`
+discipline: `lxml.etree.XMLSyntaxError` (a handful of GST-portal-exported workbooks declare an
+`x15` namespace prefix on an element but never define it — this is a `SyntaxError` subclass, not
+`ValueError`, so it was not caught) and `xlrd.compdoc.CompDocError` (a plain `Exception` subclass
+xlrd's compound-document directory walker raises on a corrupt stream chain, distinct from the
+`XLRDError`/`AssertionError` cases already handled). Both are now mapped to `CORRUPT_FILE`, the
+same outcome the file would reach if it were genuinely unreadable — no different exception type
+should be allowed to abort a 16,000-file batch over one damaged workbook.
