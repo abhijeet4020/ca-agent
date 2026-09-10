@@ -31,7 +31,7 @@ Phase 1 implements the **Silver layer** of SPEC-01. Steps 0–6 of 13 are done a
 | 7 | Text extraction and chunking | Validated |
 | 8 | JSON/XML structural routing | Validated |
 | 9 | PDF text-vs-scanned classification | **Implemented; full corpus run outstanding** |
-| 10 | Vision extraction route | Not started |
+| 10 | Vision extraction route | **Implemented; unit-tested, no live API call yet** |
 | 11 | Per-file format documents | Not started |
 | 12 | Pipeline orchestration and full CLI | Not started |
 | 13 | Integration tests and the full corpus run | Not started |
@@ -152,13 +152,43 @@ saw 6 of 57. If the full run shows that share is large, it is worth raising.
 argument). Expect roughly 1.5-2.5 hours - pdfplumber is the slowest thing in the pipeline at
 about 1.4 PDFs/second. It writes no output files.
 
+## Step 10 — implemented, never yet pointed at a real endpoint
+
+Three modules in `vision/`, 24 unit tests, all against `httpx.MockTransport`.
+
+- **`contract.py` is the important one.** The model is asked for a strict JSON schema, not
+  prose, and the reply is validated here *whatever the endpoint promised* - not every
+  OpenAI-compatible server honours `response_format`. That makes "did this extraction work" a
+  checkable question. Validated output is then rendered to the Markdown req 3 stores, so JSON
+  is the wire format and never the artifact. Two rules are load-bearing: an unreadable value
+  keeps its `[UNREADABLE]` marker rather than becoming a plausible number, and a schema-valid
+  but wholly empty reply is a **failure**, so a blank page and a failed read stay distinct.
+- **`client.py`** retries only faults that can clear, never a rejected request (400/401/403/413
+  are one attempt), honours `Retry-After`, bounds attempts, and jitters backoff. Takes an
+  injected httpx client (ADR-011) so backoff is asserted from a recorded sleep sequence.
+- **`preprocess.py`** bounds the longest edge, converts bmp/gif, rasterises with pypdfium2.
+
+**`ca-agent vision-extract <file>`** does one image or PDF page per invocation and prints the
+Markdown or the raw JSON (`--format json`). One file at a time on purpose, so a call's cost is
+visible before the batch makes thousands. Verified end to end against a stub HTTP server:
+correct schema request, `temperature=0`, bearer auth, image downscaled.
+
+API details come from `.env` (`CAAGENT__VISION__BASE_URL`, `__MODEL`, `__API_KEY`), loaded by
+`environment.bat` into the environment where `load_settings` picks them up.
+`.env.example` documents both a hosted endpoint and a local LM Studio one.
+
+**What has not happened: a single real API call.** Point `vision-extract` at one corpus scan
+first and read the output before letting any batch loose.
+
 ## Resume here
 
-**Step 10 — the vision route**, once the step-9 run confirms the page count. `httpx` not the
-OpenAI SDK (ADR-011), `pypdfium2` for rasterisation (ADR-010). `sample_vision_script.py` in the
-repo root is the user's reference implementation; follow the ADRs where it conflicts.
+**Step 11 — per-file format documents** (`*.format.md`, SPEC-01 req 4), then 12 (pipeline and
+CLI), then 13 (integration plus the full run). `docgen` is L3 and cannot import `readers`,
+which is why every reader already returns descriptive value objects instead of writing its own
+document.
 
-Step 14 (dedicated Tally route, ADR-015) is scheduled after the existing Phase 1 steps.
+Also outstanding: the **step-9 full corpus PDF run** (see above), which produces the real
+vision budget. Step 14 (dedicated Tally route, ADR-015) comes after the Phase 1 steps.
 
 ## ADR-014 came out of the step-7 smoke run
 
