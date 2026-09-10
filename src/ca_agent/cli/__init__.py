@@ -7,6 +7,7 @@ govern reuse. Argument parsing and reporting live here; all decisions live in lo
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from collections import Counter
@@ -37,6 +38,7 @@ _CATEGORY_IS_SCOPE = frozenset({"Mauli Hospital Tally Back up"})
 
 _EXIT_OK = 0
 _EXIT_CONFIG_ERROR = 2
+_EXIT_RUNTIME_ERROR = 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -76,6 +78,31 @@ def _build_parser() -> argparse.ArgumentParser:
     config = subcommands.add_parser("config", help="inspect effective configuration")
     config.add_argument("action", choices=("show", "hash"))
     config.set_defaults(handler=_run_config)
+
+    extract = subcommands.add_parser(
+        "vision-extract",
+        help="extract structured data from one image or PDF page via the vision API",
+        description=(
+            "Sends a single image or PDF page to the configured OpenAI-compatible endpoint and "
+            "prints the validated structured extraction. This spends money, one call per "
+            "invocation, so it takes one file at a time and never walks the corpus. API "
+            "details come from .env as CAAGENT__VISION__BASE_URL, __MODEL and __API_KEY."
+        ),
+    )
+    extract.add_argument("path", type=Path, help="image or PDF to extract")
+    extract.add_argument(
+        "--page", type=int, default=1, help="page number, for a PDF source (default 1)"
+    )
+    extract.add_argument(
+        "--format",
+        choices=("markdown", "json"),
+        default="markdown",
+        help="markdown is the artifact SPEC-01 stores; json is the raw validated structure",
+    )
+    extract.add_argument(
+        "--output", type=Path, default=None, help="write to this file instead of stdout"
+    )
+    extract.set_defaults(handler=_run_vision_extract)
     return parser
 
 
@@ -102,6 +129,95 @@ def _run_config(args: argparse.Namespace, settings: PipelineSettings) -> int:
     for name in _FINGERPRINTED_SECTIONS:
         print(f"{name:<12} {section_fingerprint(name, getattr(settings, name))}")
     return _EXIT_OK
+
+
+def _run_vision_extract(args: argparse.Namespace, settings: PipelineSettings) -> int:
+    """Extract one file through the vision API and print the validated structure.
+
+    Deliberately one file per invocation. This is the only command that spends money, so the
+    unit of work is small enough that an operator can see exactly what a call costs before
+    the batch pipeline starts making them by the thousand.
+    """
+    import httpx
+
+    from ca_agent.vision.client import VisionClient
+    from ca_agent.vision.contract import render_markdown
+    from ca_agent.vision.preprocess import PreprocessError, prepare_image, rasterise_pdf_page
+
+    if not args.path.is_file():
+        _LOG.error("%s is not a file", args.path)
+        return _EXIT_CONFIG_ERROR
+    if settings.vision.api_key is None:
+        _LOG.error(
+            "no vision API key; set CAAGENT__VISION__API_KEY in .env (see .env.example)"
+        )
+        return _EXIT_CONFIG_ERROR
+
+    try:
+        if args.path.suffix.lower() == ".pdf":
+            prepared = rasterise_pdf_page(
+                args.path, page_number=args.page, dpi=settings.pdf.raster_dpi
+            )
+        else:
+            prepared = prepare_image(
+                args.path.read_bytes(), max_edge_pixels=settings.vision.max_image_edge_pixels
+            )
+    except PreprocessError as error:
+        _LOG.error("could not prepare %s: %s", args.path, error)
+        return _EXIT_RUNTIME_ERROR
+    except OSError as error:
+        _LOG.error("could not read %s: %s", args.path, error)
+        return _EXIT_RUNTIME_ERROR
+
+    _LOG.info(
+        "sending %s (%dx%d) to %s", args.path.name, prepared.width, prepared.height,
+        settings.vision.model,
+    )
+    with httpx.Client() as http_client:
+        client = VisionClient(http_client, settings=settings.vision)
+        result = client.extract(prepared.content, media_type=prepared.media_type)
+
+    if not result.ok:
+        _LOG.error(
+            "extraction failed after %d attempt(s): %s - %s",
+            result.attempts, result.error.category.value, result.error.message,
+        )
+        return _EXIT_RUNTIME_ERROR
+
+    rendered = (
+        render_markdown(result.extraction)
+        if args.format == "markdown"
+        else json.dumps(_as_dict(result.extraction), indent=2, ensure_ascii=False)
+    )
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered, encoding="utf-8")
+        _LOG.info("wrote %s", args.output)
+    else:
+        print(rendered)
+    return _EXIT_OK
+
+
+def _as_dict(extraction) -> dict:
+    """Flatten a validated extraction for JSON output, in the contract's own field order."""
+    return {
+        "document_type": extraction.document_type,
+        "summary": extraction.summary,
+        "visible_text": extraction.visible_text,
+        "fields": [
+            {"label": field.label, "value": field.value, "confidence": field.confidence}
+            for field in extraction.fields
+        ],
+        "tables": [
+            {
+                "caption": table.caption,
+                "columns": list(table.columns),
+                "rows": [list(row) for row in table.rows],
+            }
+            for table in extraction.tables
+        ],
+        "uncertainties": list(extraction.uncertainties),
+    }
 
 
 def _run_discover(args: argparse.Namespace, settings: PipelineSettings) -> int:

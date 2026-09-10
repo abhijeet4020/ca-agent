@@ -624,6 +624,86 @@ A three-page scanned PDF where page 2 returns a server error after retries.
 ## Expected Output
 Pages 1 and 3 present; an explicit failure marker for page 2; status partial.
 
+## Test: test_the_model_is_asked_for_a_strict_json_schema
+## Description
+Requirement 3 wants structured output. Asking for a schema and validating the reply is what
+makes "did the extraction work" a checkable question rather than a judgement about prose.
+## Inputs
+Any extraction request.
+## Expected Output
+The request body carries a response_format of type json_schema with strict set.
+
+## Test: test_a_valid_structured_reply_is_parsed_into_its_fields
+## Inputs
+A reply holding document type, visible text, fields, tables and uncertainties.
+## Expected Output
+Each part is available as typed data, not as a blob of text to re-parse.
+
+## Test: test_a_reply_missing_a_required_key_is_a_parse_error
+## Description
+Requirement 3: never report a failed extraction as successful.
+## Inputs
+A JSON reply with no visible_text key.
+## Expected Output
+RESPONSE_PARSE_ERROR; nothing is published.
+
+## Test: test_a_reply_that_is_not_json_is_a_parse_error
+## Description
+Not every OpenAI-compatible endpoint honours response_format, so the reply is validated
+whatever the endpoint promised.
+## Inputs
+A reply whose content is prose.
+## Expected Output
+RESPONSE_PARSE_ERROR; nothing is published.
+
+## Test: test_an_empty_extraction_is_not_reported_as_success
+## Inputs
+A schema-valid reply whose visible text and fields are all empty.
+## Expected Output
+The result is not successful, because a blank page and a failed read must stay distinguishable.
+
+## Test: test_unreadable_values_are_preserved_not_inferred
+## Description
+The prompt forbids guessing an unreadable figure; the marker has to survive into the output,
+because a silently invented amount in an audit file is the worst possible failure.
+## Inputs
+A reply marking a field value [UNREADABLE].
+## Expected Output
+The marker is preserved verbatim in both the parsed field and the rendered Markdown.
+
+## Test: test_structured_output_renders_to_the_markdown_contract
+## Description
+SPEC-01 req 3 asks for structured Markdown on disk; the JSON is the wire format, not the
+artifact.
+## Inputs
+A parsed extraction carrying fields and a table.
+## Expected Output
+Markdown with the agreed sections, the table as a Markdown table, in a stable order.
+
+## Test: test_api_key_is_read_from_the_environment_and_never_logged
+## Description
+The key arrives from .env only, and a request log or error must never carry it.
+## Inputs
+A client configured with an API key, driven to an error.
+## Expected Output
+The key appears in the Authorization header and nowhere in any message or repr.
+
+## Test: test_oversized_image_is_downscaled_before_sending
+## Description
+Bounding the longest edge bounds both the request size and the per-image cost.
+## Inputs
+An image larger than the configured maximum edge.
+## Expected Output
+The sent image is within the limit and keeps its aspect ratio.
+
+## Test: test_pdf_page_is_rasterised_at_the_configured_dpi
+## Description
+ADR-010: rasterisation uses pypdfium2, never PyMuPDF.
+## Inputs
+A one-page PDF and a configured DPI.
+## Expected Output
+A PNG whose pixel size matches the page size at that DPI.
+
 ## Test: test_vision_client_retries_on_429_then_503_and_records_backoff
 ## Description
 Backoff is asserted from a recorded sleep sequence, never from wall-clock timing.

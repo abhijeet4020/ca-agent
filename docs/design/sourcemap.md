@@ -54,8 +54,14 @@
 
 - `src/ca_agent/chunking/splitter.py` : Splits text units into chunk records. Character offsets are resolved by locating each chunk back in its own unit so the lineage claim is verified rather than assumed, and chunk ids are derived from scope, content, unit and configuration so a rerun over unchanged content reproduces them exactly.
 
+- `src/ca_agent/vision/contract.py` : What the model is asked for and the proof that it complied. A strict JSON schema is the wire format, so "did this extraction work" is checkable rather than a judgement about prose; the reply is validated whatever the endpoint promised, and only validated output is rendered to the Markdown SPEC-01 req 3 stores. Carries the never-infer rule: an unreadable value keeps its marker rather than becoming a plausible number.
+
+- `src/ca_agent/vision/client.py` : Calls an OpenAI-compatible endpoint and returns a validated extraction or an explicit failure, never a maybe. Retries only faults that can clear, never a rejected request, honours Retry-After, and bounds attempts. Takes an injected httpx client (ADR-011) so backoff is tested from a recorded sleep sequence with no network.
+
+- `src/ca_agent/vision/preprocess.py` : Normalises corpus images the endpoints reject (bmp, gif, tiff) and bounds the longest edge, which bounds both request size and per-image cost. Rasterises PDF pages with pypdfium2, never PyMuPDF (ADR-010).
+
 ### Layer 4 - orchestration
 - `src/ca_agent/pipeline/routing.py` : Maps an observed format to its processing route. Lives in L4 because choosing between routes requires knowing all of them exist, which ARCHITECTURE.md forbids an L3 module from doing. Exhaustive over FormatFamily - an unrouted family raises rather than defaulting, so SPEC-01 req 6 coverage cannot silently regress.
 
 ### Layer 5 - CLI
-- `src/ca_agent/cli/__init__.py` : Operator entry point. `discover` walks and hashes the corpus with no conversion and no paid calls; `config hash` prints the per-section fingerprints that govern reuse.
+- `src/ca_agent/cli/__init__.py` : Operator entry point. `discover` walks and hashes the corpus with no conversion and no paid calls; `config hash` prints the per-section fingerprints that govern reuse; `vision-extract` sends one image or PDF page to the vision API and prints the validated structured result, deliberately one file per invocation so the cost of a call is visible before the batch makes thousands.
