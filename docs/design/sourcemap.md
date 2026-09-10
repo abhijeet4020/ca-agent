@@ -65,6 +65,10 @@
 - `src/ca_agent/docgen/renderer.py` : Renders a FormatDocument as Markdown. Every section is emitted even when empty, because an omitted section cannot be told from one nobody attempted; table cells are escaped, since a pipe in a transcribed column name would reshape the table and turn a correct observation into a wrong one.
 
 ### Layer 4 - orchestration
+- `src/ca_agent/pipeline/executor.py` : Runs one file down its chosen route and returns outputs, observations for the format document, and a terminal status. The only place that knows all the readers exist, which is why it is L4. Every route returns rather than raises, because req 6 needs a record for every file and 16,596 of them cannot end on the first damaged one.
+
+- `src/ca_agent/pipeline/orchestrator.py` : The run itself - discover, hash, deduplicate, decide, execute, record, publish. The ordering is the immutability contract in practice: one run ordinal so every output directory is unique by construction, `record.json` written last so a directory without one is an abandoned attempt, and manifests sealed only at the end so a crash leaves the previous run active. Archive members re-enter the same loop and get their own records.
+
 - `src/ca_agent/pipeline/routing.py` : Maps an observed format to its processing route. Lives in L4 because choosing between routes requires knowing all of them exist, which ARCHITECTURE.md forbids an L3 module from doing. Exhaustive over FormatFamily - an unrouted family raises rather than defaulting, so SPEC-01 req 6 coverage cannot silently regress.
 
 ### Layer 5 - CLI

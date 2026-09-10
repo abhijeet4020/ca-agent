@@ -75,6 +75,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     discover.set_defaults(handler=_run_discover)
 
+    run = subcommands.add_parser(
+        "run", help="process the corpus into the Silver layer and publish a new version"
+    )
+    run.add_argument("--category", default=None, help="limit to one top-level category")
+    run.add_argument("--limit", type=int, default=None, help="stop after N discovered files")
+    run.add_argument(
+        "--dry-run", action="store_true", help="decide everything, write nothing"
+    )
+    run.add_argument(
+        "--force", action="store_true", help="reprocess even unchanged content (req 8)"
+    )
+    run.add_argument(
+        "--no-retry-locked", action="store_true", help="leave previously locked files alone"
+    )
+    run.set_defaults(handler=_run_pipeline)
+
     config = subcommands.add_parser("config", help="inspect effective configuration")
     config.add_argument("action", choices=("show", "hash"))
     config.set_defaults(handler=_run_config)
@@ -110,9 +126,11 @@ def _load(args: argparse.Namespace) -> PipelineSettings:
     """Load settings, tolerating a missing vision credential for read-only subcommands.
 
     `discover` performs no paid calls, so demanding an API key would block the very command an
-    operator uses to estimate cost before supplying one.
+    operator uses to estimate cost before supplying one. `run` is included because the routes
+    that would spend money record their work as pending instead when vision is unavailable,
+    so a full extraction run is possible with no credential at all.
     """
-    needs_credentials = args.command not in {"discover", "config"}
+    needs_credentials = args.command not in {"discover", "config", "run"}
     config_path = args.config if args.config and args.config.exists() else None
     try:
         return load_settings(config_path)
@@ -128,6 +146,26 @@ def _run_config(args: argparse.Namespace, settings: PipelineSettings) -> int:
         return _EXIT_OK
     for name in _FINGERPRINTED_SECTIONS:
         print(f"{name:<12} {section_fingerprint(name, getattr(settings, name))}")
+    return _EXIT_OK
+
+
+def _run_pipeline(args: argparse.Namespace, settings: PipelineSettings) -> int:
+    """Process the corpus and print the end-of-run report."""
+    from ca_agent.pipeline.orchestrator import RunOptions, format_report, run_pipeline
+    from ca_agent.versioning.reuse import RetryPolicy
+
+    if not settings.paths.raw_root.is_dir():
+        _LOG.error("corpus root %s does not exist", settings.paths.raw_root)
+        return _EXIT_CONFIG_ERROR
+
+    options = RunOptions(
+        category=args.category,
+        limit=args.limit,
+        dry_run=args.dry_run,
+        policy=RetryPolicy(force=args.force, retry_locked=not args.no_retry_locked),
+    )
+    summary = run_pipeline(settings, options)
+    print(format_report(summary))
     return _EXIT_OK
 
 
