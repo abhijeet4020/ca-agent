@@ -60,6 +60,10 @@
 
 - `src/ca_agent/vision/preprocess.py` : Normalises corpus images the endpoints reject (bmp, gif, tiff) and bounds the longest edge, which bounds both request size and per-image cost. Rasterises PDF pages with pypdfium2, never PyMuPDF (ADR-010).
 
+- `src/ca_agent/docgen/model.py` : The neutral description of one processed file that becomes its `*.format.md` (req 4). docgen and readers are the same layer, so the orchestrator translates whichever reader ran into this shape - that indirection is what keeps every reader free of document-writing code. Absence is the explicit UNKNOWN string, never an omission.
+
+- `src/ca_agent/docgen/renderer.py` : Renders a FormatDocument as Markdown. Every section is emitted even when empty, because an omitted section cannot be told from one nobody attempted; table cells are escaped, since a pipe in a transcribed column name would reshape the table and turn a correct observation into a wrong one.
+
 ### Layer 4 - orchestration
 - `src/ca_agent/pipeline/routing.py` : Maps an observed format to its processing route. Lives in L4 because choosing between routes requires knowing all of them exist, which ARCHITECTURE.md forbids an L3 module from doing. Exhaustive over FormatFamily - an unrouted family raises rather than defaulting, so SPEC-01 req 6 coverage cannot silently regress.
 

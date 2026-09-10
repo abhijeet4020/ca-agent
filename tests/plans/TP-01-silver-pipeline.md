@@ -1022,6 +1022,57 @@ A file whose structure cannot be inspected.
 ## Expected Output
 Format document marks the structure explicitly unknown.
 
+## Test: test_format_document_records_every_required_identity_field
+## Description
+Requirement 4 lists the identity a document must carry: source path, scope, extension,
+detected format, content hash, version, status and output references.
+## Inputs
+A document for an ordinary tabular file.
+## Expected Output
+Every listed field appears with its value.
+
+## Test: test_archive_member_document_names_its_archive_and_member_path
+## Description
+Requirement 4: archive members must retain their originating archive and member paths.
+## Inputs
+A document for a file extracted from a zip.
+## Expected Output
+Both the archive identity and the member path appear.
+
+## Test: test_tabular_document_distinguishes_inferred_types_from_source_information
+## Description
+Requirement 4 is explicit that an inferred type must not be presented as though the source
+declared it.
+## Inputs
+A worksheet with one inferred column and one kept as text.
+## Expected Output
+The document marks which is inferred and gives the reason the other was not.
+
+## Test: test_locked_file_document_records_stage_status_and_retry_action
+## Description
+Requirement 4's last row: a locked file still gets a document saying what to do about it.
+## Inputs
+A document for a password-protected PDF.
+## Expected Output
+Status, error category, processing stage and the retry action are all present.
+
+## Test: test_a_section_with_nothing_to_report_says_so_explicitly
+## Description
+An absent section is ambiguous between "nothing found" and "never looked", which requirement
+4's prohibition on inventing content makes unacceptable.
+## Inputs
+A document whose table section is empty.
+## Expected Output
+The section is present and explicitly says none were found.
+
+## Test: test_rendered_document_escapes_pipes_in_values
+## Description
+A transcribed value containing a pipe would otherwise corrupt the surrounding table.
+## Inputs
+A column name containing a pipe character.
+## Expected Output
+The pipe is escaped and the table structure survives.
+
 ---
 
 ## Acceptance criteria traceability
