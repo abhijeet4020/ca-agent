@@ -332,8 +332,7 @@ Full text in `docs/design/ADR.md` (ADR-001 … ADR-013). The load-bearing ones:
 
 ## Vision route reference material (for steps 9–10)
 
-`sample_vision_script.py` in the repo root (untracked) is the **user's own reference
-implementation**: LM Studio / OpenAI-compatible client, base64 image payloads, per-page PDF
+`.agents/reference/sample_vision_script.py` is the **user's own reference implementation**: LM Studio / OpenAI-compatible client, base64 image payloads, per-page PDF
 rasterization, a Markdown-contract prompt. The user asked that it inform the vision pipeline and
 said changing its logic is allowed.
 
