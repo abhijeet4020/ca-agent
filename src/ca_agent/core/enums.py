@@ -114,6 +114,25 @@ class UnitType(str, Enum):
     FIELD_PATH = "field_path"
 
 
+class PageKind(str, Enum):
+    """What one PDF page turned out to contain.
+
+    This is the branch SPEC-01 req 2 and req 3 divide on, and the most expensive decision in
+    the pipeline: a page called SCANNED costs a paid vision call, while one wrongly called TEXT
+    silently yields nothing. EMPTY is recorded rather than dropped, and MIXED - a few characters
+    stamped over a full-page scan - is treated as scanned because its text layer is not the
+    content.
+    """
+
+    TEXT = "text"
+    SCANNED = "scanned"
+    MIXED = "mixed"
+    EMPTY = "empty"
+
+    def needs_vision(self) -> bool:
+        return self in {PageKind.SCANNED, PageKind.MIXED}
+
+
 class Route(str, Enum):
     """Processing route chosen by signature-based reader selection (SPEC-01 req 6)."""
 

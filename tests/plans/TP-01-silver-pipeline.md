@@ -447,6 +447,101 @@ Conversion succeeds; no CORRUPT_FILE failure from openpyxl's own extension check
 
 ## Group I — PDF classification and vision (requirements 2 and 3)
 
+## Test: test_text_page_is_classified_from_its_character_count
+## Description
+The text-versus-scanned split decides whether a page costs a paid vision call, so it is
+decided from measured content rather than from the file's shape.
+## Inputs
+A page carrying more than the configured minimum of native characters.
+## Expected Output
+Page kind TEXT, with the measured character count recorded.
+
+## Test: test_image_only_page_is_classified_scanned
+## Inputs
+A page with no text layer and an image covering most of it.
+## Expected Output
+Page kind SCANNED, with the measured image coverage recorded.
+
+## Test: test_blank_page_is_classified_empty_and_never_embedded
+## Description
+Requirement 2 forbids embedding empty text; an empty page is recorded, not dropped.
+## Inputs
+A page with no text and no image.
+## Expected Output
+Page kind EMPTY, recorded, and contributing no text unit.
+
+## Test: test_page_with_little_text_over_an_image_is_classified_mixed
+## Description
+A stamped or signed scan carries a few characters over a full-page image and must not be
+mistaken for a text page.
+## Inputs
+A page with an image covering most of it and a handful of characters.
+## Expected Output
+Page kind MIXED.
+
+## Test: test_classification_thresholds_come_from_configuration
+## Description
+Requirement 8: the thresholds are stamped into the reuse fingerprint, so they must be read
+from settings rather than hard-coded.
+## Inputs
+The same PDF classified under two different minimum-character settings.
+## Expected Output
+The page kind changes with the setting.
+
+## Test: test_document_with_every_page_text_does_not_require_vision
+## Inputs
+A three-page PDF with a native text layer throughout.
+## Expected Output
+requires_vision is false and native text is extracted for every page.
+
+## Test: test_document_with_any_scanned_page_requires_vision
+## Description
+Requirement 3: one scanned page makes the whole document a vision document.
+## Inputs
+A three-page PDF with two text pages and one scanned page.
+## Expected Output
+requires_vision is true, and the text pages still carry their native text so no vision call
+is wasted on them.
+
+## Test: test_owner_password_only_pdf_is_extracted_not_marked_locked
+## Description
+ADR-008: hundreds of ITR-V and TIS filings carry an encryption dictionary but open with an
+empty user password. Treating the marker as "locked" would discard the most valuable filings
+in the corpus.
+## Inputs
+A PDF encrypted with an owner password and an empty user password.
+## Expected Output
+Text is extracted, the owner restriction is recorded, and the status is not locked.
+
+## Test: test_genuinely_locked_pdf_is_recorded_as_password_protected
+## Inputs
+A PDF whose user password is not empty.
+## Expected Output
+Status locked with PASSWORD_PROTECTED_FILE; no password is guessed.
+
+## Test: test_page_that_fails_extraction_is_marked_and_the_rest_survive
+## Description
+Requirement 3: preserve the pages that worked, mark the one that did not, and report the
+document as partial rather than failed.
+## Inputs
+A three-page PDF where page 2 raises during text extraction.
+## Expected Output
+Pages 1 and 3 carry their text, page 2 carries a failure, and the document status is partial.
+
+## Test: test_corrupt_pdf_is_reported_not_raised
+## Inputs
+Bytes that begin with a PDF header but are not a valid document.
+## Expected Output
+A CORRUPT_FILE failure is returned, never raised.
+
+## Test: test_page_units_are_numbered_in_page_order
+## Description
+Requirement 3 requires page order to be preserved, and a chunk citing "page 7" must mean it.
+## Inputs
+A four-page text PDF.
+## Expected Output
+Units are PAGE units whose refs run page:1 to page:4 in order.
+
 ## Test: test_fully_text_pdf_routes_to_text_extraction
 ## Inputs
 A PDF whose every page carries a native text layer.

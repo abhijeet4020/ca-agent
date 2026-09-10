@@ -162,6 +162,155 @@ def minimal_pdf_bytes(page_count: int = 1) -> bytes:
     return bytes(out)
 
 
+#: Long enough to clear the default 120 non-whitespace character threshold for a text page,
+#: which a single heading deliberately does not.
+_SAMPLE_PAGE_TEXT = "\n".join(
+    (
+        "Statement of profit and loss for the year ended 31 March 2026 with all schedules",
+        "Depreciation, finance costs and other expenses reconciled against the trial balance",
+        "Reserves and surplus carried forward to the balance sheet as at the same date",
+    )
+)
+
+#: US Letter, the size every corpus PDF uses. Area 484,704 square points.
+_PAGE_WIDTH = 612
+_PAGE_HEIGHT = 792
+
+
+def pdf_bytes(pages: list[dict]) -> bytes:
+    """Build a PDF whose pages carry a real text layer, a real image, or both.
+
+    Each entry describes one page: ``text`` places that string in a Helvetica text object, and
+    ``image_fraction`` places a JPEG covering that share of the page height. Both are needed
+    because the whole text-versus-scanned classification turns on what a page actually contains,
+    and a page with no content stream at all - which is all the older builder could make - only
+    ever exercises the empty branch. Written by hand so no PDF-writing dependency is added.
+    """
+    count = len(pages)
+    font_number = 3
+    page_numbers = [4 + index for index in range(count)]
+    content_numbers = [4 + count + index for index in range(count)]
+    image_numbers = [4 + 2 * count + index for index in range(count)]
+
+    kids = " ".join(f"{number} 0 R" for number in page_numbers)
+    objects: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        f"<< /Type /Pages /Count {count} /Kids [{kids}] >>".encode(),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+
+    for index, page in enumerate(pages):
+        resources = f"/Font << /F1 {font_number} 0 R >>"
+        if page.get("image_fraction"):
+            resources += f" /XObject << /Im1 {image_numbers[index]} 0 R >>"
+        objects.append(
+            (
+                f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {_PAGE_WIDTH} {_PAGE_HEIGHT}] "
+                f"/Resources << {resources} >> /Contents {content_numbers[index]} 0 R >>"
+            ).encode()
+        )
+
+    for page in pages:
+        objects.append(_content_stream(page))
+
+    for page in pages:
+        objects.append(_image_object(page.get("image_fraction")))
+
+    return _assemble_pdf(objects)
+
+
+def _content_stream(page: dict) -> bytes:
+    parts: list[str] = []
+    fraction = page.get("image_fraction")
+    if fraction:
+        height = _PAGE_HEIGHT * float(fraction)
+        parts.append(f"q {_PAGE_WIDTH} 0 0 {height:.2f} 0 0 cm /Im1 Do Q")
+    text = page.get("text")
+    if text:
+        parts.append("BT /F1 12 Tf")
+        for line_number, line in enumerate(str(text).splitlines() or [""]):
+            offset = _PAGE_HEIGHT - 72 - line_number * 14
+            parts.append(f"1 0 0 1 72 {offset} Tm ({_escape_pdf_text(line)}) Tj")
+        parts.append("ET")
+    body = "\n".join(parts).encode("latin-1", "replace")
+    return b"<< /Length " + str(len(body)).encode() + b" >>\nstream\n" + body + b"\nendstream"
+
+
+def _escape_pdf_text(value: str) -> str:
+    return value.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+
+
+def _image_object(fraction: float | None) -> bytes:
+    if not fraction:
+        # An unreferenced placeholder, so object numbering stays trivial to compute.
+        return b"<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>\nstream\n\nendstream"
+    jpeg = image_bytes("JPEG", (64, 64))
+    header = (
+        b"<< /Type /XObject /Subtype /Image /Width 64 /Height 64 /ColorSpace /DeviceRGB "
+        b"/BitsPerComponent 8 /Filter /DCTDecode /Length " + str(len(jpeg)).encode() + b" >>"
+    )
+    return header + b"\nstream\n" + jpeg + b"\nendstream"
+
+
+def _assemble_pdf(objects: list[bytes]) -> bytes:
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_at = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \n".encode()
+    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R /ID [<AB> <AB>] >>\n".encode()
+    out += f"startxref\n{xref_at}\n%%EOF\n".encode()
+    return bytes(out)
+
+
+def text_pdf_bytes(page_texts: list[str]) -> bytes:
+    """A PDF whose every page carries a native text layer."""
+    return pdf_bytes([{"text": text} for text in page_texts])
+
+
+def scanned_pdf_bytes(page_count: int = 1) -> bytes:
+    """An image-only PDF, the shape a flatbed or phone scan produces."""
+    return pdf_bytes([{"image_fraction": 0.95} for _ in range(page_count)])
+
+
+def encrypted_pdf_bytes(*, user_password: str = "secret") -> bytes:
+    """A genuinely locked PDF: the empty password will not open it."""
+    import io as _io
+
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    writer.append(PdfReader(_io.BytesIO(text_pdf_bytes([_SAMPLE_PAGE_TEXT]))))
+    writer.encrypt(user_password=user_password, owner_password="owner")
+    buffer = _io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def owner_password_only_pdf_bytes() -> bytes:
+    """An ITR-V shaped PDF: encrypted, but the empty user password opens it (ADR-008).
+
+    Hundreds of the corpus's most valuable filings are this shape, and treating the presence of
+    an encryption dictionary as "locked" would discard all of them.
+    """
+    import io as _io
+
+    from pypdf import PdfReader, PdfWriter
+
+    page = f"Indian Income Tax Return Acknowledgement\n{_SAMPLE_PAGE_TEXT}"
+    writer = PdfWriter()
+    writer.append(PdfReader(_io.BytesIO(text_pdf_bytes([page]))))
+    writer.encrypt(user_password="", owner_password="owner")
+    buffer = _io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
 # --- images ----------------------------------------------------------------------------
 
 
