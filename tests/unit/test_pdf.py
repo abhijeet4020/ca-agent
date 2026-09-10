@@ -164,6 +164,53 @@ def test_owner_password_only_pdf_is_extracted_not_marked_locked(tmp_path):
     assert "Income Tax Return" in "\n".join(unit.text for unit in result.units)
 
 
+def test_supplied_password_opens_an_otherwise_locked_pdf(tmp_path):
+    # Arrange - ADR-008 amendment: 213 locked corpus filings are AIS/TIS, whose password the
+    # portal derives from the client's own PAN and date of birth, which the firm holds
+    source = files.write_bytes(
+        tmp_path / "src" / "ais.pdf", files.encrypted_pdf_bytes(user_password="aaaaa0000a01011980")
+    )
+
+    # Act
+    result = read_pdf(source, settings=_SETTINGS, passwords=("aaaaa0000a01011980",))
+
+    # Assert
+    assert result.status is not ProcessingStatus.LOCKED
+    assert result.encrypted is True
+    assert result.units, "the document must actually be readable, not merely unlocked"
+
+
+def test_a_wrong_supplied_password_still_reports_locked(tmp_path):
+    # Arrange - a supplied credential must never turn a failure into a false success
+    source = files.write_bytes(
+        tmp_path / "src" / "locked.pdf", files.encrypted_pdf_bytes(user_password="correct")
+    )
+
+    # Act
+    result = read_pdf(source, settings=_SETTINGS, passwords=("wrong", "alsowrong"))
+
+    # Assert
+    assert result.status is ProcessingStatus.LOCKED
+    assert result.failure is not None
+    assert result.failure.category is ErrorCategory.PASSWORD_PROTECTED_FILE
+
+
+def test_no_password_is_ever_written_to_a_record_or_message(tmp_path):
+    # Arrange - a processing record is a committed artifact; a password in one is a leak
+    secret = "aaaaa0000a01011980"
+    source = files.write_bytes(
+        tmp_path / "src" / "locked.pdf", files.encrypted_pdf_bytes(user_password="different")
+    )
+
+    # Act
+    result = read_pdf(source, settings=_SETTINGS, passwords=(secret,))
+
+    # Assert
+    rendered = f"{result.failure} {result!r}"
+    assert secret not in rendered
+    assert "aaaaa0000a" not in rendered
+
+
 def test_genuinely_locked_pdf_is_recorded_as_password_protected(tmp_path):
     # Arrange - a real user password, which is never guessed
     result = _classify(tmp_path, files.encrypted_pdf_bytes(user_password="secret"))

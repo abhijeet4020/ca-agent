@@ -513,6 +513,58 @@ A PDF encrypted with an owner password and an empty user password.
 ## Expected Output
 Text is extracted, the owner restriction is recorded, and the status is not locked.
 
+## Test: test_supplied_password_opens_an_otherwise_locked_pdf
+## Description
+ADR-008 amendment. 352 corpus PDFs are genuinely locked and 213 of them are AIS/TIS filings,
+whose password the Income Tax portal derives from the client's own PAN and date of birth. The
+firm holds those values, so supplying them is not guessing.
+## Inputs
+A PDF locked with a known password, and that password supplied by the caller.
+## Expected Output
+Text is extracted and the document is not reported locked.
+
+## Test: test_ais_password_is_derived_from_the_supplied_pan_and_date_of_birth
+## Description
+The portal's documented scheme is lowercase PAN followed by DDMMYYYY.
+## Inputs
+A credential entry with PAN ABCPD7033X and date of birth 1985-04-12.
+## Expected Output
+The candidate password abcpd7033x12041985 is offered.
+
+## Test: test_a_wrong_supplied_password_still_reports_locked
+## Description
+A supplied credential must not turn a failure into a false success.
+## Inputs
+A locked PDF and a password that does not open it.
+## Expected Output
+Status locked with PASSWORD_PROTECTED_FILE.
+
+## Test: test_no_password_is_ever_written_to_a_record_or_message
+## Description
+A password reaching a processing record or log would leak a client credential into an output
+that is committed and shared.
+## Inputs
+A locked PDF with a supplied password that fails.
+## Expected Output
+Neither the password nor the PAN appears anywhere in the resulting error.
+
+## Test: test_credentials_are_resolved_per_client_scope
+## Description
+Requirement 7: scopes are independent, so one client's credential must never be tried against
+another client's document.
+## Inputs
+A credential store holding entries for two different client scopes.
+## Expected Output
+Each scope resolves only to its own candidate passwords.
+
+## Test: test_a_missing_credential_file_is_not_an_error
+## Description
+The credential file is optional; a firm that supplies none must still get a complete run.
+## Inputs
+A configuration pointing at no credential file.
+## Expected Output
+An empty store, and locked files simply stay locked.
+
 ## Test: test_genuinely_locked_pdf_is_recorded_as_password_protected
 ## Inputs
 A PDF whose user password is not empty.

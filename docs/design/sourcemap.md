@@ -21,6 +21,8 @@
 
 ### Layer 1 - config and storage
 - `src/ca_agent/config/settings.py` : Every processing tunable, layered TOML then environment then overrides, validated with extra-forbid. Credentials arrive only from the environment as `SecretStr`. Config is kept strictly separate from runtime logic.
+- `src/ca_agent/config/credentials.py` : Turns credentials the firm holds for its own clients into candidate document passwords (ADR-016), keyed by category and client so one client's credential is never tried against another's files. Derives the Income Tax portal's documented AIS/TIS scheme and nothing else - no permutation, no brute force - and keeps every secret out of its own repr.
+
 - `src/ca_agent/config/fingerprint.py` : Per-section canonical JSON and SHA-256 fingerprints that drive the SPEC-01 req 8 reuse decision. Sorted keys, materialised defaults and quantised floats make the hash stable across runs.
 - `src/ca_agent/storage/atomic.py` : Crash-safe publication primitives. Temp-file-plus-replace for ordinary writes, create-exclusive for sealed manifests, so a published artifact can never be silently overwritten.
 - `src/ca_agent/storage/paths.py` : Owns the Silver output layout. Version directories keyed by run ordinal are what make "never overwrite" hold by construction rather than by discipline.

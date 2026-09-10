@@ -15,6 +15,9 @@ environment.sh
 .env.*
 !.env.example
 config/*.local.toml
+# Client PANs and dates of birth used to open locked AIS/TIS filings (ADR-008 amendment).
+config/credentials*.toml
+!config/credentials.example.toml
 
 # Python
 .venv/

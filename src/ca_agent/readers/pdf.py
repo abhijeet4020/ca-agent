@@ -8,6 +8,7 @@ same as a locked file, and treating it as one would discard hundreds of ITR-V fi
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -68,9 +69,16 @@ class PdfResult:
         return tuple(page.number for page in self.pages if page.kind.needs_vision())
 
 
-def read_pdf(source: Path, *, settings: PdfSettings) -> PdfResult:
-    """Classify every page of a PDF and extract native text where it exists."""
-    encryption = _inspect_encryption(source)
+def read_pdf(
+    source: Path, *, settings: PdfSettings, passwords: Sequence[str] = ()
+) -> PdfResult:
+    """Classify every page of a PDF and extract native text where it exists.
+
+    ``passwords`` are candidates the caller resolved from credentials the firm supplied for
+    this client (ADR-008 amendment). They are tried only after the empty password, and nothing
+    is ever generated here - the reader receives values or it does not.
+    """
+    encryption = _inspect_encryption(source, passwords)
     if encryption.failure is not None:
         return PdfResult(reader=_READER, status=encryption.status, failure=encryption.failure,
                          encrypted=encryption.encrypted)
@@ -107,17 +115,22 @@ class _PdfFailure(Exception):
 class _Encryption:
     encrypted: bool = False
     owner_password_only: bool = False
+    #: The password that opened the document, needed again to read its pages. Never recorded.
+    password: str = ""
     status: ProcessingStatus = ProcessingStatus.SUCCESS
     failure: ErrorInfo | None = None
 
 
-def _inspect_encryption(source: Path) -> _Encryption:
+def _inspect_encryption(source: Path, passwords: Sequence[str]) -> _Encryption:
     """Distinguish an owner-restricted PDF from a genuinely locked one.
 
     Many ITR-V and TIS filings carry an encryption dictionary whose *user* password is empty;
     the owner password only restricts printing and copying. Treating the marker alone as
     "locked" would discard hundreds of the most analytically valuable documents in the corpus.
-    An empty password is tried once. No password is ever guessed, requested or brute-forced.
+
+    The empty password is tried first. Only then are the caller's supplied candidates tried -
+    values the firm already holds for its own client, never anything generated here. No
+    password reaches the returned error, because a processing record is a committed artifact.
     """
     from pypdf import PdfReader
     from pypdf.errors import PdfReadError
@@ -126,7 +139,7 @@ def _inspect_encryption(source: Path) -> _Encryption:
         reader = PdfReader(source)
         if not reader.is_encrypted:
             return _Encryption()
-        opened = reader.decrypt("")
+        opened, matched = _try_passwords(reader, passwords)
     except PdfReadError as error:
         return _Encryption(
             encrypted=True,
@@ -146,17 +159,36 @@ def _inspect_encryption(source: Path) -> _Encryption:
         )
 
     if int(opened) == _NOT_DECRYPTED:
+        tried = "the empty password" if not passwords else (
+            f"the empty password and {len(passwords)} supplied credential(s)"
+        )
         return _Encryption(
             encrypted=True,
             status=ProcessingStatus.LOCKED,
             failure=ErrorInfo(
                 category=ErrorCategory.PASSWORD_PROTECTED_FILE,
-                message="the empty password does not open this document; none is guessed",
+                # Deliberately counts the candidates rather than naming them: this message is
+                # written into a processing record, and a record is a committed artifact.
+                message=f"{tried} did not open this document; none is guessed",
                 stage=_STAGE,
                 reader="pypdf",
             ),
         )
-    return _Encryption(encrypted=True, owner_password_only=True)
+    return _Encryption(
+        encrypted=True, owner_password_only=not matched, password=matched
+    )
+
+
+def _try_passwords(reader, passwords: Sequence[str]) -> tuple[int, str]:
+    """Try the empty password, then each supplied candidate. Returns the result and what worked."""
+    opened = reader.decrypt("")
+    if int(opened) != _NOT_DECRYPTED:
+        return int(opened), ""
+    for candidate in passwords:
+        opened = reader.decrypt(candidate)
+        if int(opened) != _NOT_DECRYPTED:
+            return int(opened), candidate
+    return _NOT_DECRYPTED, ""
 
 
 # --- page classification ------------------------------------------------------------------------
@@ -170,7 +202,7 @@ def _classify_pages(source: Path, settings: PdfSettings, encryption: _Encryption
     units: list[TextUnit] = []
 
     try:
-        with pdfplumber.open(source, password="") as document:
+        with pdfplumber.open(source, password=encryption.password) as document:
             for number, page in enumerate(document.pages, start=1):
                 observation = _observe_page(page, number, settings)
                 observations.append(observation)

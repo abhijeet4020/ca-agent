@@ -27,6 +27,7 @@ The index format is of two types
 - ADR-013 : The tabular reader passes bytes, not the source path, to openpyxl so its filename-extension check cannot override signature-first detection.
 - ADR-014 : An unpacked desktop application inside a client folder is excluded as NON_DATA, detected by co-occurring program markers rather than by folder name.
 - ADR-015 : Tally XML voucher exports get a dedicated route in a later step rather than being chunked as generic field-path text.
+- ADR-016 : Locked PDFs may be opened with credentials the firm supplies for its own clients; nothing is ever guessed (amends ADR-008).
 
 ---
 
@@ -217,3 +218,37 @@ into two clean, queryable tables per export. It is enough work to be **its own s
 an addition to step 8**, so step 8 ships as validated and the Tally route is scheduled after
 the remaining Phase 1 steps. Until it lands these files still produce complete, honest output;
 it is merely verbose.
+
+## ADR-016: Locked PDFs open with firm-supplied credentials, never with guesses
+This amends ADR-008, which said "no password is ever supplied, requested, or guessed". That
+rule was written to forbid brute-forcing, and it still does. Classifying the corpus showed it
+was also forbidding something legitimate.
+
+Of 6,685 PDFs, **352 are genuinely locked** — the empty password does not open them — and
+**213 of those are AIS and TIS filings**, the Annual Information Statement and Taxpayer
+Information Summary. Those carry every income, TDS and SFT transaction reported against a
+client, which makes them among the most analytically valuable documents in the corpus. The
+Income Tax portal protects them with a *documented, formulaic* password: the PAN in lowercase
+followed by the date of birth as `DDMMYYYY`. A chartered accountant already holds both values
+for their own client.
+
+Supplying a value the firm holds is not guessing, so `config/credentials.local.toml`
+(gitignored, documented by `config/credentials.example.toml`) may map `category/client` to a
+PAN and date of birth. `config/credentials.py` derives the portal's documented candidate and
+offers any literal passwords the firm adds for bank statements, which use their own schemes.
+
+The guarantees that keep this honest are all tested:
+
+- **Nothing is generated.** The reader receives candidate strings or it receives none; it never
+  permutes, extends or brute-forces. A document no supplied credential opens stays
+  `PASSWORD_PROTECTED_FILE`.
+- **The empty password is always tried first**, so ADR-008's owner-restricted case is unchanged.
+- **Credentials are scoped to one client.** The key is category *and* client, because LIC
+  Employees exists under two categories and one client's credential must never be tried against
+  another's documents (req 7).
+- **No password reaches an output.** A failure message counts the candidates tried rather than
+  naming them, and neither `ClientCredentials` nor `CredentialStore` renders a secret in its
+  `repr`, because processing records are committed artifacts and objects end up in tracebacks.
+- **The credential path is excluded from every fingerprint.** Supplying a password changes
+  whether a document can be read, not how its content is extracted, and req 8's reuse rules
+  already retry a `locked` outcome, so newly readable files are picked up on the next run.

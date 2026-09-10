@@ -159,6 +159,19 @@ class ExternalToolSettings(_Section):
     unrar_path: str | None = None
 
 
+class CredentialSettings(_Section):
+    """Location of the optional client credential file (ADR-008 amendment).
+
+    Every field is excluded from the fingerprint: supplying a password changes whether a
+    document can be read, not how its content is extracted. A file that goes from locked to
+    readable is picked up anyway, because req 8's reuse rules already retry a locked outcome.
+    """
+
+    FINGERPRINT_EXCLUDE: ClassVar[frozenset[str]] = frozenset({"client_credentials_path"})
+
+    client_credentials_path: Path | None = None
+
+
 class PathSettings(_Section):
     """Machine-specific locations. Excluded from every fingerprint by construction."""
 
@@ -182,6 +195,7 @@ class PipelineSettings(BaseModel):
     structured: StructuredSettings = StructuredSettings()
     embedding: EmbeddingSettings = EmbeddingSettings()
     external_tools: ExternalToolSettings = ExternalToolSettings()
+    credentials: CredentialSettings = CredentialSettings()
 
 
 def _nest_environment(env: Mapping[str, str]) -> dict[str, Any]:
