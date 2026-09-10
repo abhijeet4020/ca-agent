@@ -1,7 +1,7 @@
 # Session Handoff — SPEC-01 Phase 1 (Silver layer)
 
 **Updated:** 2026-09-10
-**Branch:** `master` at `0ca9681`, pushed
+**Branch:** `master` at `ec821b5` (step 7 committed, **not yet pushed**)
 **Read first:** `.agents/plans/PHASE-01-silver-layer-plan.md`, then `docs/design/ADR.md` and
 `docs/design/sourcemap.md`
 
@@ -68,18 +68,45 @@ full workbook read; disable it for large batch runs.
 
 ---
 
-## Resume here
+## Step 7 — implemented, corpus run outstanding
 
-**Step 7 — text extraction and chunking.** Document readers (`python-docx`, `striprtf`,
-`lxml.html`, stdlib `email`, txt/log via `charset-normalizer`) plus chunk records carrying full
-lineage, split with `langchain-text-splitters`. Embeddings are Gold-layer work and are explicitly
-*not* in Phase 1; step 7 stops at chunk records.
+`readers/text.py` (docx, pptx, rtf, html, email, plain text) and the `chunking/` package are
+written, unit-tested and committed. 313 tests pass, ruff clean.
 
-Corpus counts for this route, measured during the step-6 run: 353 `word_ooxml`, 339 `plain_text`,
-75 `html`, 50 `word_ole` (needs LibreOffice — see open items), 10 `rtf`.
+Design points worth not relitigating:
+
+- `TextUnit` and `UnitType` live in `core/` because ARCHITECTURE.md puts `readers` and
+  `chunking` in the same layer, so neither can import the other. That contract also lets step
+  9's PDF pages and step 8's field paths feed the same chunker.
+- docx body order is recovered by walking the XML body: python-docx exposes `paragraphs` and
+  `tables` as separate sequences, and reading them in turn moves every table to the end.
+- pptx slide text is parsed straight from the package XML. The corpus has two presentations,
+  which does not justify adding python-pptx.
+- Chunk offsets are resolved by locating each chunk back in its own unit, not accumulated, so
+  the lineage claim is verified; an unlocatable chunk raises `ChunkingError` rather than
+  recording a false offset.
+- Chunk ids derive from scope, content hash, unit ref, seq and the config fingerprint - not a
+  counter - so reruns reproduce them (req 8) while identical bytes in two scopes stay distinct
+  (req 7).
+- Legacy `.doc` (50 files) still routes to `NO_COMPATIBLE_READER` pending the LibreOffice
+  decision in open items.
+
+**What remains: the full-corpus validation run.** Script is at
+`<scratchpad>/corpus_validate_text.py`; it takes an optional file-limit argument. A 1,500-file
+smoke run was clean (118 documents, 0 failures, 7,876 chunks, offsets verified against source).
+
+## ADR-014 came out of that smoke run
+
+19 percent of all extractable text turned out not to be client data:
+`Business Clients/SANDEEP KOTHAWALE/AY 2019-20/REVISED/ITR` is a whole unpacked copy of the
+e-filing utility (jQuery, keystore, its own HTML, plus `ISIN_LIST.properties` at 3.3 MB and
+`IFSC.txt` at 1.7 MB). `catalog/bundles.py` now excludes it as `NON_DATA` - detected by a Java
+keystore plus a `.properties` file in the same subtree, never by folder name, because clients
+genuinely have `ITR` folders and `.cer`/`.pfx` files. Exactly one directory corpus-wide, 62
+files, 15.8 MB, no false positives. The user chose this over narrower alternatives.
 
 Use the scratchpad for validation output and delete it afterwards. A full archive expansion is
-about 2.3 GiB and a full tabular run writes several hundred MB.
+about 2.3 GiB and a full tabular run writes several hundred MB; the text run writes nothing.
 
 ---
 
