@@ -26,6 +26,7 @@ The index format is of two types
 - ADR-012 : Archive member names are sanitised for the filesystem while the original name is kept as lineage.
 - ADR-013 : The tabular reader passes bytes, not the source path, to openpyxl so its filename-extension check cannot override signature-first detection.
 - ADR-014 : An unpacked desktop application inside a client folder is excluded as NON_DATA, detected by co-occurring program markers rather than by folder name.
+- ADR-015 : Tally XML voucher exports get a dedicated route in a later step rather than being chunked as generic field-path text.
 
 ---
 
@@ -193,3 +194,26 @@ is the only layer that walks the tree; `select_route` is a pure function of one 
 and could not make this decision without becoming path-aware. **Every excluded file still gets a
 processing record and a format document** — only its route changes to `NON_DATA`, so SPEC-01
 req 6's "no silent skips" guarantee is untouched.
+
+## ADR-015: Tally XML voucher exports get a dedicated route, in a later step
+Validating the structured route over the corpus showed that **six Tally XML exports from a
+single client produce about 92 percent of all structured text** — roughly 370,000 of 403,672
+chunks. Reading one explains why. Each `<VOUCHER>` carries a handful of fields anyone would
+want — `DATE`, `VOUCHERNUMBER`, `VOUCHERTYPENAME`, `PARTYLEDGERNAME`, `NARRATION` and its
+ledger amounts — wrapped in dozens of Tally's own serialisation flags: `ISMSTFROMSYNC`,
+`ASORIGINAL`, `AUDITED`, `FORJOBCOSTING`, `ISOPTIONAL`, `USEFOREXCISE`, `ALLOWCONSUMPTION`,
+`OLDAUDITENTRYIDS` and more, repeated verbatim for every voucher in the file. The bulk of a
+47 MB "bank statement" is therefore Tally's file format, not the client's transactions.
+
+The generic structured reader is behaving correctly: a voucher array is nested well past the
+depth cap and fails the scalar-value ratio, so it is properly refused as a flat collection and
+falls to field-path text. The defect is in the *representation*, not the routing — this is
+transactional data that belongs in a table.
+
+The decision is a **dedicated Tally route**, recognising the `ENVELOPE / BODY / IMPORTDATA`
+voucher shape and flattening each voucher to one row (date, number, type, party, narration,
+amount) with its ledger entries as child rows. That turns roughly 370,000 near-useless chunks
+into two clean, queryable tables per export. It is enough work to be **its own step rather than
+an addition to step 8**, so step 8 ships as validated and the Tally route is scheduled after
+the remaining Phase 1 steps. Until it lands these files still produce complete, honest output;
+it is merely verbose.

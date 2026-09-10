@@ -29,12 +29,13 @@ Phase 1 implements the **Silver layer** of SPEC-01. Steps 0–6 of 13 are done a
 | 5 | Archive expansion: depth-3 recursion, bomb guards, path sanitation | Validated |
 | 6 | Tabular → Parquet with round-trip typing | Validated |
 | 7 | Text extraction and chunking | Validated |
-| 8 | JSON/XML structural routing | Not started |
+| 8 | JSON/XML structural routing | Validated |
 | 9 | PDF text-vs-scanned classification | Not started |
 | 10 | Vision extraction route | Not started |
 | 11 | Per-file format documents | Not started |
 | 12 | Pipeline orchestration and full CLI | Not started |
 | 13 | Integration tests and the full corpus run | Not started |
+| 14 | Dedicated Tally XML voucher route (ADR-015, added 2026-09-10) | Not started |
 
 "Validated" means the step was run over all 16,596 real corpus files, not just unit-tested.
 
@@ -104,19 +105,43 @@ mismatches across 3 documents went to zero.
 
 ---
 
+## Step 8 result (2026-09-10)
+
+397 structured documents → **395 extracted, 2 genuine failures, 0 unhandled exceptions**.
+12,548 Parquet tables over 54,436 rows; 4,280 field-path units; **130 zero-padded identifiers
+preserved as strings and zero typed wrongly**, which is the round-trip rule holding on real ITR
+data. The 2 failures are a `.log` file misdetected as JSON and one genuinely truncated ITR JSON.
+
+Records reach Parquet through `write_records_as_parquet`, a public entry point added to the
+tabular reader, rather than a second typing implementation that could drift. XML is parsed with
+entity resolution, DTD loading and network access disabled - a client file is untrusted input.
+
+Two fixes the corpus run forced:
+
+- **Units were grouped only by top-level field path.** A Tally register has one root child
+  holding the whole document, so one export produced a single `TextUnit` of **56.6 million
+  characters**. Units are now bounded by `StructuredSettings.max_unit_characters` and carry a
+  part suffix so each stays individually citable.
+- **Tally writes raw control characters such as `&#4;`** into its exports, which no conforming
+  parser accepts. A recorded recovery fallback (`recover_malformed_xml`) now salvages seven
+  files of real ledger and item master data; failures fell from 9 to 2. A recovered parse always
+  carries a warning so it is never mistaken for a clean one.
+
 ## Resume here
 
-**Step 8 — JSON and XML routed by observed structure** (SPEC-01 req 6). The design is in the
-approved plan: an array node is a tabular collection iff length >= 3, >= 90% object elements,
-mean pairwise key-set Jaccard >= 0.8, >= 70% scalar leaves and inner depth <= 2. Those flatten
-to dotted field paths with the **same round-trip typing rule as tabular** - ITR JSON is full of
-zero-padded PANs and TANs. Everything else renders as `field.path: value` lines in document
-order and feeds the existing chunker with `unit_type=FIELD_PATH`. `StructuredSettings` already
-holds the thresholds. Corpus counts: 248 `json`, 155 `xml`.
+**Step 9 — PDF text-versus-scanned classification** (SPEC-01 req 2 vs req 3). The design is in
+the approved plan: per page, `TEXT` if >= 120 non-whitespace chars, `SCANNED` if < 120 chars and
+image coverage >= 50%, `EMPTY` if < 20 chars and coverage < 5%, else `MIXED` treated as scanned.
+All pages `TEXT` -> `PDF_TEXT`; any `SCANNED`/`MIXED` -> `PDF_VISION`. `PdfSettings` already
+holds every threshold. Use `pypdf` for structure and encryption, `pdfplumber` for text with
+layout, `pypdfium2` for rasterisation - **never PyMuPDF** (ADR-010, AGPL). PDF pages become
+`UnitType.PAGE` units and feed the step-7 chunker unchanged.
 
-Test-plan entries for step 8 already exist in TP-01 Group J
-(`test_tabular_json_collection_routes_to_parquet`, `test_document_like_json_routes_to_chunking`,
-`test_json_leading_zero_identifier_survives_flattening`).
+This is the corpus's biggest route by far: **6,685 PDFs**, plus the owner-password-only case in
+ADR-008 that governs hundreds of ITR-V and TIS filings. Step 9 also decides how much step 10
+costs, so run `discover` and report the scanned-page count before any paid vision call.
+
+Step 14 (dedicated Tally route, ADR-015) is scheduled after the existing Phase 1 steps.
 
 ## ADR-014 came out of the step-7 smoke run
 
@@ -157,6 +182,9 @@ would have:
   named no single place until `unit_sequence` was added.
 - **A client folder holds an entire unpacked desktop application**, 19 percent of all
   extractable text (ADR-014).
+- **A single XML rendered to 56.6 million characters in one unit**, because grouping by
+  top-level field path is no bound at all when the root has one child.
+- **Tally embeds raw control characters** that no conforming XML parser will accept.
 
 Do not mark a step done until it has run over the real corpus. Corpus validation scripts go in the
 scratchpad and **must print live progress** — see
