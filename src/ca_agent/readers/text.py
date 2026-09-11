@@ -20,6 +20,8 @@ from ca_agent.core.model import ErrorInfo
 from ca_agent.core.text import TextUnit
 
 _STAGE = "text_extraction"
+#: A legacy .doc that takes longer than this to convert is malformed, not slow.
+_SOFFICE_TIMEOUT_SECONDS = 120
 _HEADING_STYLE = re.compile(r"^heading\s*\d*$", re.IGNORECASE)
 _TRAILING_SPACE = re.compile(r"[ \t]+$", re.MULTILINE)
 _REPEATED_SPACE = re.compile(r"[ \t]{2,}")
@@ -30,6 +32,7 @@ _DRAWING_TEXT = "{http://schemas.openxmlformats.org/drawingml/2006/main}t"
 
 _TEXT_FAMILIES = {
     FormatFamily.WORD_OOXML,
+    FormatFamily.WORD_OLE,
     FormatFamily.PRESENTATION_OOXML,
     FormatFamily.RTF,
     FormatFamily.HTML,
@@ -64,8 +67,18 @@ class TextResult:
         return any(unit.has_content() for unit in self.units)
 
 
-def read_text(source: Path, *, settings: TextSettings, family: FormatFamily) -> TextResult:
-    """Extract text from one document as ordered units."""
+def read_text(
+    source: Path,
+    *,
+    settings: TextSettings,
+    family: FormatFamily,
+    soffice_path: str | None = None,
+) -> TextResult:
+    """Extract text from one document as ordered units.
+
+    ``soffice_path`` enables the legacy .doc route. Without it a .doc is reported as having no
+    compatible reader rather than failing, which is what SPEC-01 req 6 asks for.
+    """
     if family not in _TEXT_FAMILIES:
         raise ValueError(f"{family.value} is not a text family; reader selection is wrong")
 
@@ -82,6 +95,8 @@ def read_text(source: Path, *, settings: TextSettings, family: FormatFamily) -> 
     try:
         if family is FormatFamily.WORD_OOXML:
             return _read_docx(payload, settings)
+        if family is FormatFamily.WORD_OLE:
+            return _read_word_ole(source, settings, soffice_path)
         if family is FormatFamily.PRESENTATION_OOXML:
             return _read_pptx(payload, settings)
         if family is FormatFamily.HTML:
@@ -161,6 +176,95 @@ def _read_docx(payload: bytes, settings: TextSettings) -> TextResult:
         tables_extracted=extracted,
         warnings=tuple(warnings),
     )
+
+
+def _read_word_ole(
+    source: Path, settings: TextSettings, soffice_path: str | None
+) -> TextResult:
+    """Read a legacy Word document by converting it with LibreOffice first.
+
+    Converting to docx rather than to plain text is deliberate: it preserves headings and
+    tables, so the existing docx reader recovers the same structure it does for a native docx
+    instead of flattening the document into a wall of characters.
+
+    This is the one place the pipeline runs an external binary, and it stays consistent with
+    "nothing is ever executed": LibreOffice is a trusted converter the operator installed and
+    configured, the client file is handed to it as *data*, and the call is hardened so the
+    document cannot act. A throwaway user profile means no user configuration or macro library
+    is loaded, and a timeout means a malformed file cannot hang a 16,000-file run.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    reader = "libreoffice+python-docx"
+    if not soffice_path:
+        raise _ReaderFailure(
+            reader,
+            ErrorCategory.NO_COMPATIBLE_READER,
+            "legacy .doc needs LibreOffice; set CAAGENT__EXTERNAL_TOOLS__SOFFICE_PATH",
+        )
+    if not Path(soffice_path).is_file():
+        raise _ReaderFailure(
+            reader,
+            ErrorCategory.CONFIG_ERROR,
+            f"configured LibreOffice binary does not exist: {soffice_path}",
+        )
+
+    workspace = Path(tempfile.mkdtemp(prefix="ca_agent_doc_"))
+    try:
+        outdir = workspace / "out"
+        outdir.mkdir(parents=True, exist_ok=True)
+        command = [
+            soffice_path,
+            "--headless",
+            "--norestore",
+            "--nolockcheck",
+            "--nodefault",
+            "--nofirststartwizard",
+            f"-env:UserInstallation={(workspace / 'profile').as_uri()}",
+            "--convert-to",
+            "docx",
+            "--outdir",
+            str(outdir),
+            str(source),
+        ]
+        try:
+            completed = subprocess.run(  # noqa: S603 - fixed argv, operator-configured binary
+                command, capture_output=True, timeout=_SOFFICE_TIMEOUT_SECONDS, check=False
+            )
+        except subprocess.TimeoutExpired as error:
+            raise _ReaderFailure(
+                reader,
+                ErrorCategory.EXTRACTION_ERROR,
+                f"LibreOffice did not finish within {_SOFFICE_TIMEOUT_SECONDS}s",
+            ) from error
+        except OSError as error:
+            raise _ReaderFailure(
+                reader, ErrorCategory.EXTRACTION_ERROR, f"could not run LibreOffice: {error}"
+            ) from error
+
+        converted = next(iter(sorted(outdir.glob("*.docx"))), None)
+        if converted is None:
+            detail = completed.stderr.decode("utf-8", "replace").strip()[:200]
+            raise _ReaderFailure(
+                reader,
+                ErrorCategory.EXTRACTION_ERROR,
+                f"LibreOffice produced no output (exit {completed.returncode}): {detail}",
+            )
+
+        result = _read_docx(converted.read_bytes(), settings)
+        # The reader name records that this went through a converter: the extracted text is one
+        # step removed from the source, and a reader of the format document should be told.
+        return TextResult(
+            reader=reader,
+            units=result.units,
+            tables_detected=result.tables_detected,
+            tables_extracted=result.tables_extracted,
+            warnings=result.warnings,
+        )
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
 
 
 def _is_heading(paragraph) -> bool:

@@ -237,3 +237,69 @@ def test_non_text_family_is_rejected(tmp_path, family):
     # Arrange / Act / Assert - fail fast rather than returning meaningless empty text
     with pytest.raises(ValueError):
         _extract(tmp_path, "wrong.bin", b"data", family)
+
+
+# --- legacy .doc via LibreOffice ---------------------------------------------------------
+
+
+def test_legacy_doc_without_libreoffice_is_no_compatible_reader(tmp_path):
+    """Without the converter a .doc is unreadable, not broken.
+
+    Before this route existed, routing sent WORD_OLE to the text reader whenever soffice was
+    configured and the reader rejected the family outright - so enabling LibreOffice turned a
+    clean "no reader" record into a spurious unexpected exception.
+    """
+    # Arrange / Act
+    source = files.write_bytes(tmp_path / "src" / "old.doc", files.legacy_doc_bytes())
+    result = read_text(source, settings=_SETTINGS, family=FormatFamily.WORD_OLE)
+
+    # Assert
+    assert result.failure is not None
+    assert result.failure.category is ErrorCategory.NO_COMPATIBLE_READER
+    assert "SOFFICE_PATH" in result.failure.message
+
+
+def test_a_misconfigured_libreoffice_path_is_reported_clearly(tmp_path):
+    # Arrange - a typo in the path must say so rather than fail obscurely later
+    source = files.write_bytes(tmp_path / "src" / "old.doc", files.legacy_doc_bytes())
+
+    # Act
+    result = read_text(
+        source,
+        settings=_SETTINGS,
+        family=FormatFamily.WORD_OLE,
+        soffice_path=str(tmp_path / "nowhere" / "soffice.exe"),
+    )
+
+    # Assert
+    assert result.failure is not None
+    assert result.failure.category is ErrorCategory.CONFIG_ERROR
+
+
+def test_libreoffice_conversion_is_read_with_the_docx_reader(tmp_path, monkeypatch):
+    # Arrange - converting to docx rather than plain text is what preserves headings and tables
+    import subprocess
+
+    converted = files.document_bytes(
+        [("heading", "Balance Sheet"), ("paragraph", "Reserves and surplus carried forward.")]
+    )
+    fake_soffice = files.write_bytes(tmp_path / "bin" / "soffice.exe", b"stub")
+    source = files.write_bytes(tmp_path / "src" / "old.doc", files.legacy_doc_bytes())
+
+    def _fake_run(command, **kwargs):
+        outdir = Path(command[command.index("--outdir") + 1])
+        (outdir / "old.docx").write_bytes(converted)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    # _read_word_ole imports subprocess at call time, so patching the module reaches it.
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    # Act
+    result = read_text(
+        source, settings=_SETTINGS, family=FormatFamily.WORD_OLE, soffice_path=str(fake_soffice)
+    )
+
+    # Assert - the docx reader's structure recovery is reused, not reimplemented
+    assert result.failure is None
+    assert result.reader == "libreoffice+python-docx"
+    assert any(unit.unit_ref == "Balance Sheet" for unit in result.units)

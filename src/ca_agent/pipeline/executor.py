@@ -170,7 +170,12 @@ def _text(
     settings: PipelineSettings,
     route_fingerprint: str,
 ) -> ExecutionResult:
-    result = read_text(source_path, settings=settings.text, family=family)
+    result = read_text(
+        source_path,
+        settings=settings.text,
+        family=family,
+        soffice_path=settings.external_tools.soffice_path,
+    )
     if result.failure is not None:
         return ExecutionResult(
             status=ProcessingStatus.FAILED, reader=result.reader, error=result.failure
