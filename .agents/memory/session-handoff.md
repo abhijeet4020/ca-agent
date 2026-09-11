@@ -207,6 +207,31 @@ and ACLs are not a sound basis for a durability assertion.
 188 and reprocessed exactly the 56 locked-and-partial files the retry policy names - the reuse
 contract behaving correctly on real data, not just fixtures.
 
+## 2026-09-11: the Silver output was deleted by something unidentified
+
+**The code is fine. The data is gone.** A full corpus run completed successfully (r000001:
+16,534 discovered, 9,744 success, 36 failures, 490,338 chunks), Gold indexed it, and then
+`data/silver` and `data/gold` were **progressively deleted while the build was running** -
+measured dropping 7,418 -> 5,930 -> 4,025 -> 1,192 -> 0 records over a few minutes, ending with
+the directory itself removed.
+
+Ruled out: OneDrive (it syncs the C: user profile, not D:), disk space (215 GB free), the Gold
+build (it was *failing* on missing files, not causing them - two scopes recorded
+`[Errno 2] No such file or directory` reading chunk files mid-build), and the Streamlit process
+(deletion continued after it was stopped).
+
+**Not ruled out:** Windows Defender reports one threat detection on this machine - a fileless
+PowerShell dropper fetching a remote script and piping it to `powershell -w hidden`. Defender
+reports it blocked. There is **no evidence linking it to the deletion**, but it is the one
+unexplained hostile artefact on the box and deserves a full scan before another 5 GB run.
+
+`raw_data/` was never at risk and is intact - Bronze is opened read-only and no code path writes
+there, which is ADR-003 earning its keep. Everything lost is regenerable by re-running.
+
+**Before re-running:** consider a different `CAAGENT__PATHS__OUTPUT_ROOT`, and know that a
+Ctrl-C discards a whole run because manifests seal only at the end. Incremental sealing is the
+top robustness gap.
+
 ## Resume here
 
 **The full corpus run is the remaining Phase 1 deliverable.**
