@@ -79,5 +79,8 @@
 
 - `src/ca_agent/pipeline/routing.py` : Maps an observed format to its processing route. Lives in L4 because choosing between routes requires knowing all of them exist, which ARCHITECTURE.md forbids an L3 module from doing. Exhaustive over FormatFamily - an unrouted family raises rather than defaulting, so SPEC-01 req 6 coverage cannot silently regress.
 
+### Frontend
+- `streamlit_app.py` : The operator-facing search interface over the Gold layer. The CLI can already answer a question, but a chartered accountant should not need a terminal to ask one. The model is a cached resource loaded once per session, the question is batched in a form so it is not embedded on every keystroke, and every result carries the client, document and page it came from.
+
 ### Layer 5 - CLI
 - `src/ca_agent/cli/__init__.py` : Operator entry point. `discover` walks and hashes the corpus with no conversion and no paid calls; `config hash` prints the per-section fingerprints that govern reuse; `vision-extract` sends one image or PDF page to the vision API and prints the validated structured result, deliberately one file per invocation so the cost of a call is visible before the batch makes thousands.

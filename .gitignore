@@ -31,3 +31,12 @@ htmlcov/
 
 # Windows shell artifacts
 Thumbs.db
+
+# Pipeline run logs (regenerable)
+run.out.log
+run.err.log
+pipeline_run.log
+
+# Streamlit run logs
+streamlit.out.log
+streamlit.err.log
