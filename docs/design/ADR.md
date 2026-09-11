@@ -28,6 +28,7 @@ The index format is of two types
 - ADR-014 : An unpacked desktop application inside a client folder is excluded as NON_DATA, detected by co-occurring program markers rather than by folder name.
 - ADR-015 : Tally XML voucher exports get a dedicated route in a later step rather than being chunked as generic field-path text.
 - ADR-016 : Locked PDFs may be opened with credentials the firm supplies for its own clients; nothing is ever guessed (amends ADR-008).
+- ADR-017 : The paid vision pass runs inside the pipeline; a PDF's effective route is re-decided after classification, and rasterised pages are bounded before sending.
 
 ---
 
@@ -252,3 +253,41 @@ The guarantees that keep this honest are all tested:
 - **The credential path is excluded from every fingerprint.** Supplying a password changes
   whether a document can be read, not how its content is extracted, and req 8's reuse rules
   already retry a `locked` outcome, so newly readable files are picked up on the next run.
+
+---
+
+## ADR-017: The paid vision pass runs inside the pipeline, and rasterised pages are bounded
+
+Until now the vision route existed only as `ca-agent vision-extract`, one file per invocation.
+The batch pipeline classified images and scanned PDF pages, recorded them `partial` with "the
+paid pass has not run", and made no call at all - so `run` produced no vision output however
+healthy the endpoint was. SPEC-01 req 3 requires the extraction to happen, so the paid call now
+runs inside the executor:
+
+- An image becomes a one-page combined Markdown; a scanned or mixed PDF becomes one combined
+  Markdown in page order, with native text kept for the pages that carried it and a mixed page's
+  native layer appended only when token Jaccard against the transcription falls below
+  `pdf.native_text_duplicate_jaccard`.
+- No chunks and no Parquet are published for a scanned or mixed PDF, because req 3 keeps the
+  combined output out of retrieval.
+- A page that fails is marked and the document becomes `partial`, so the pages that worked are
+  preserved rather than lost with it.
+
+Two consequences worth recording:
+
+**The route is re-decided after classification.** A PDF is provisionally `PDF_TEXT`; one
+scanned page makes it `PDF_VISION` (req 3). The classifier runs inside the reader, so the
+effective route is only known after execution. The run records the effective route and its
+fingerprint, and consults both route keys when looking up a prior outcome, so a scanned PDF is
+not reprocessed - and re-charged - on every rerun. Changing only the vision section therefore
+republishes the vision output and leaves Parquet untouched.
+
+**Rasterised pages are bounded by `vision.max_image_edge_pixels`.** A US Letter page at the
+configured 250 dpi rasterises to about 2125 x 2750 and 2 MB. LM Studio answered those with HTTP
+502 and connection read errors; the same pages bounded to 1413 x 2000 and about 1.3 MB extracted
+cleanly. The raster DPI is chosen for legibility, so it is not the right place to bound request
+size - the vision section already owns that limit, and a PDF page now passes through it exactly
+as an image does.
+
+The transport stays injectable (ADR-011): `executor._vision_transport` is the single seam the
+suite replaces with an `httpx.MockTransport`, so no test can spend money.

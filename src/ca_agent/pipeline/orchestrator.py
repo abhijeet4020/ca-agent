@@ -46,6 +46,9 @@ from ca_agent.versioning.reuse import RetryPolicy, WorkDecision, decide
 _LOG = logging.getLogger("ca_agent.run")
 #: The one corpus category whose directory is itself the client scope.
 CATEGORY_IS_SCOPE = frozenset({"Mauli Hospital Tally Back up"})
+#: Routes whose real identity is only known after their reader runs. A PDF is provisionally
+#: PDF_TEXT and may be redirected to PDF_VISION, so a prior outcome may sit under either key.
+_PROVISIONAL_ALTERNATIVES: dict[Route, Route] = {Route.PDF_TEXT: Route.PDF_VISION}
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,6 +283,22 @@ def _process_one(
         return None
 
     prior = manifests[scope.scope_id].latest_outcome(content.hexdigest, route)
+    if decision_route.provisional:
+        # A PDF's real route is only known once its pages are classified, so a prior outcome
+        # may have been recorded under the vision route. Consulting both is what stops a
+        # scanned PDF being reprocessed - and re-charged - on every rerun.
+        alternative = _PROVISIONAL_ALTERNATIVES.get(route)
+        candidate = (
+            manifests[scope.scope_id].latest_outcome(content.hexdigest, alternative)
+            if alternative is not None
+            else None
+        )
+        if candidate is not None and (prior is None or candidate.run_ordinal > prior.run_ordinal):
+            prior, route = candidate, alternative
+            fingerprint = fingerprints.setdefault(
+                alternative, _route_fingerprint(settings, alternative)
+            )
+
     if decide(prior, fingerprint, options.policy) is WorkDecision.REUSE:
         summary.reused += 1
         summary.record(relpath, prior.status, None)
@@ -304,6 +323,11 @@ def _process_one(
         passwords=credentials.passwords_for(scope),
     )
     pending.members = result.extracted_members
+    if result.effective_route is not None and result.effective_route is not route:
+        # The classifier redirected the route, so the manifest and its fingerprint must key on
+        # what actually ran rather than on the provisional decision.
+        route = result.effective_route
+        fingerprint = fingerprints.setdefault(route, _route_fingerprint(settings, route))
 
     summary.processed += 1
     summary.chunks += result.chunk_count

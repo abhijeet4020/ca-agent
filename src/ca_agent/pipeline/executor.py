@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from ca_agent.chunking.records import ChunkingError
 from ca_agent.chunking.splitter import chunk_units
-from ca_agent.config.settings import PipelineSettings
+from ca_agent.config.settings import PipelineSettings, VisionSettings
 from ca_agent.core.enums import ErrorCategory, FormatFamily, PageKind, ProcessingStatus, Route
 from ca_agent.core.model import ContentHash, ErrorInfo, OutputRef, SourceRef
 from ca_agent.core.text import TextUnit
@@ -23,6 +23,10 @@ from ca_agent.readers.pdf import read_pdf
 from ca_agent.readers.structured import read_structured
 from ca_agent.readers.tabular import read_tabular
 from ca_agent.readers.text import read_text
+from ca_agent.storage.atomic import atomic_write_text
+from ca_agent.vision.client import VisionClient
+from ca_agent.vision.contract import VisionDocument, VisionPage, render_vision_document
+from ca_agent.vision.preprocess import PreprocessError, prepare_image, rasterise_pdf_page
 
 _TEXT_FILENAME = "text/document.txt"
 _CHUNKS_FILENAME = "chunks/chunks.jsonl"
@@ -40,6 +44,12 @@ _RETRY_VISION_DISABLED = (
     "already classified so only the scanned ones will be sent."
 )
 
+#: Where the combined vision Markdown is published inside a version directory (SPEC-01 req 3).
+_VISION_FILENAME = "vision/document.md"
+_VISION_STAGE = "vision_extraction"
+_VISION_READER = "vision"
+_PDF_STAGE = "pdf_classification"
+
 
 @dataclass(frozen=True, slots=True)
 class ExecutionResult:
@@ -56,6 +66,9 @@ class ExecutionResult:
     extracted_members: tuple[ExtractedMember, ...] = field(default=())
     chunk_count: int = 0
     pages_needing_vision: tuple[int, ...] = ()
+    #: Set only when the classifier redirected a provisional route - a PDF that turned out to
+    #: need vision. The run records the effective route so reuse keys on the right fingerprint.
+    effective_route: Route | None = None
 
 
 def execute(
@@ -87,7 +100,7 @@ def execute(
     if route is Route.ARCHIVE:
         return _archive(source_path, family, content, extraction_root, settings)
     if route is Route.VISION_IMAGE:
-        return _vision_image(source_path, settings)
+        return _vision_image(source_path, source, settings, destination)
     return _no_extraction(route)
 
 
@@ -329,6 +342,22 @@ def _pdf(
             status=ProcessingStatus.FAILED, reader=result.reader, error=result.failure
         )
 
+    needing_vision = result.pages_needing_vision()
+    if needing_vision:
+        # The classifier has redirected this file: SPEC-01 req 3 makes one scanned or mixed
+        # page turn the whole document into a vision document, so it takes the combined
+        # Markdown route rather than the text route.
+        return _pdf_vision(
+            source_path,
+            source,
+            result,
+            pages,
+            encryption,
+            needing_vision,
+            destination,
+            settings,
+        )
+
     outputs, chunk_count, chunk_error = _publish_text(
         result.units, source, content, destination, settings, route_fingerprint
     )
@@ -337,36 +366,176 @@ def _pdf(
             status=ProcessingStatus.FAILED, reader=result.reader, error=chunk_error
         )
 
-    needing_vision = result.pages_needing_vision()
-    status = result.status
-    retry_action = None
-    warnings = result.warnings
     error = None
-    if needing_vision and not settings.vision.enabled:
-        # The pages are classified and recorded; only the paid step is outstanding, so this is
-        # partial rather than failed and a later run picks it up without reclassifying. The
-        # reason goes in the error, not a warning: a record's error is what explains a status
-        # that is not success.
-        status = ProcessingStatus.PARTIAL
-        retry_action = _RETRY_VISION_DISABLED
-        error = ErrorInfo(
-            category=ErrorCategory.API_ERROR,
-            message=(
-                f"{len(needing_vision)} page(s) need vision extraction but the vision "
-                "route is disabled"
-            ),
-            stage="pdf_classification",
-            reader=result.reader,
-        )
-    elif result.status is ProcessingStatus.PARTIAL:
+    if result.status is ProcessingStatus.PARTIAL:
         error = ErrorInfo(
             category=ErrorCategory.EXTRACTION_ERROR,
             message=f"{sum(1 for page in result.pages if page.failure)} page(s) could not be read",
-            stage="pdf_classification",
+            stage=_PDF_STAGE,
             reader=result.reader,
         )
+    return ExecutionResult(
+        status=result.status,
+        reader=result.reader,
+        outputs=outputs,
+        sections=(
+            _pdf_counts(result, needing_vision, chunk_count),
+            encryption,
+            DocumentSection("Pages", table=pages),
+        ),
+        error=error,
+        warnings=result.warnings,
+        chunk_count=chunk_count,
+    )
 
-    counts = DocumentSection(
+
+def _pdf_vision(
+    source_path: Path,
+    source: SourceRef,
+    result,
+    pages_table: DocumentTable,
+    encryption: DocumentSection,
+    needing_vision: tuple[int, ...],
+    destination: Path,
+    settings: PipelineSettings,
+) -> ExecutionResult:
+    """The paid route for a scanned or mixed PDF (SPEC-01 req 3).
+
+    One combined Markdown is produced in page order: native text for the pages that carried
+    it, vision output for the scanned ones, and a mixed page's native layer only when it says
+    something the transcription did not. A page that fails is marked and the document becomes
+    partial rather than failed, so the pages that worked are preserved. No chunks and no
+    Parquet are published - req 3 keeps a scanned PDF's combined output out of retrieval.
+    """
+    if not settings.vision.enabled:
+        return ExecutionResult(
+            status=ProcessingStatus.PARTIAL,
+            reader=result.reader,
+            error=ErrorInfo(
+                category=ErrorCategory.API_ERROR,
+                message=(
+                    f"{len(needing_vision)} page(s) need vision extraction but the vision "
+                    "route is disabled"
+                ),
+                stage=_PDF_STAGE,
+                reader=result.reader,
+            ),
+            retry_action=_RETRY_VISION_DISABLED,
+            sections=(
+                _pdf_counts(result, needing_vision, 0),
+                encryption,
+                DocumentSection("Pages", table=pages_table),
+            ),
+            pages_needing_vision=needing_vision,
+            effective_route=Route.PDF_VISION,
+        )
+
+    vision_pages: list[VisionPage] = []
+    failures: list[ErrorInfo] = []
+    width = height = 0
+    for page in result.pages:
+        if not page.kind.needs_vision():
+            vision_pages.append(VisionPage(number=page.number, native_text=page.text))
+            continue
+
+        try:
+            raster = rasterise_pdf_page(
+                source_path, page_number=page.number, dpi=settings.pdf.raster_dpi
+            )
+            # The raster DPI is chosen for legibility, but a full-page scan rendered at it can
+            # run to several megabytes - large enough that a local server rejects the request
+            # outright with HTTP 502. Bounding the longest edge here puts a page under the same
+            # limit the image route already applies to its input.
+            prepared = prepare_image(
+                raster.content, max_edge_pixels=settings.vision.max_image_edge_pixels
+            )
+        except PreprocessError as error:
+            failures.append(_page_failure(page.number, str(error)))
+            vision_pages.append(VisionPage(number=page.number, failure=str(error)))
+            continue
+        if not width:
+            width, height = prepared.width, prepared.height
+
+        outcome = _extract(prepared.content, prepared.media_type, settings)
+        if not outcome.ok:
+            failures.append(outcome.error)
+            vision_pages.append(
+                VisionPage(number=page.number, failure=outcome.error.message)
+            )
+            continue
+        vision_pages.append(_extracted_page(page, outcome.extraction, settings))
+
+    status = ProcessingStatus.PARTIAL if failures else ProcessingStatus.SUCCESS
+    document = VisionDocument(
+        display_name=source_path.name,
+        source_path=source.relative_path.as_posix(),
+        image_format="PDF",
+        width=width,
+        height=height,
+        page_count=result.page_count,
+        model=settings.vision.model,
+        status=status.value,
+        pages=tuple(vision_pages),
+        limitations=tuple(error.message for error in failures),
+    )
+    output = _write_vision_markdown(document, destination)
+    return ExecutionResult(
+        status=status,
+        reader=result.reader,
+        outputs=(output,),
+        sections=(
+            _pdf_counts(result, needing_vision, 0),
+            encryption,
+            DocumentSection("Pages", table=pages_table),
+            _vision_section(document),
+        ),
+        error=_partial_error(failures),
+        warnings=result.warnings,
+        pages_needing_vision=needing_vision,
+        effective_route=Route.PDF_VISION,
+    )
+
+
+def _extracted_page(page, extraction, settings: PipelineSettings) -> VisionPage:
+    """A scanned or mixed page's vision output, plus its native layer when it is not duplicate.
+
+    A MIXED page's native text is appended only when it differs from the transcription
+    (token Jaccard below the configured threshold); otherwise it would repeat what the model
+    already read, which req 3 requires the combined document to avoid.
+    """
+    native = page.text if page.kind is PageKind.MIXED else ""
+    if native and _token_jaccard(native, extraction.visible_text) < (
+        settings.pdf.native_text_duplicate_jaccard
+    ):
+        return VisionPage(number=page.number, extraction=extraction, native_text=native)
+    return VisionPage(number=page.number, extraction=extraction)
+
+
+def _page_failure(page_number: int, message: str) -> ErrorInfo:
+    return ErrorInfo(
+        category=ErrorCategory.EXTRACTION_ERROR,
+        message=f"page {page_number} could not be rendered for vision: {message}",
+        stage=_VISION_STAGE,
+        reader=_VISION_READER,
+    )
+
+
+def _partial_error(failures: list[ErrorInfo]) -> ErrorInfo | None:
+    """One explaining error for a partial document, keeping the first page's own category."""
+    if not failures:
+        return None
+    return ErrorInfo(
+        category=failures[0].category,
+        message=(
+            f"{len(failures)} page(s) could not be extracted; first: {failures[0].message}"
+        ),
+        stage=_VISION_STAGE,
+        reader=_VISION_READER,
+    )
+
+
+def _pdf_counts(result, needing_vision: tuple[int, ...], chunk_count: int) -> DocumentSection:
+    return DocumentSection(
         "PDF structure",
         rows=(
             ("Page count", str(result.page_count)),
@@ -378,17 +547,16 @@ def _pdf(
             ("Chunks produced", str(chunk_count)),
         ),
     )
-    return ExecutionResult(
-        status=status,
-        reader=result.reader,
-        outputs=outputs,
-        sections=(counts, encryption, DocumentSection("Pages", table=pages)),
-        error=error,
-        warnings=warnings,
-        retry_action=retry_action,
-        chunk_count=chunk_count,
-        pages_needing_vision=needing_vision,
-    )
+
+
+def _token_jaccard(left: str, right: str) -> float:
+    """Token overlap between a page's native text and its vision transcription."""
+    left_tokens = set(left.split())
+    right_tokens = set(right.split())
+    union = left_tokens | right_tokens
+    if not union:
+        return 1.0
+    return len(left_tokens & right_tokens) / len(union)
 
 
 def _count(result, kind: PageKind) -> int:
@@ -472,37 +640,116 @@ def _archive(
     )
 
 
-def _vision_image(source_path: Path, settings: PipelineSettings) -> ExecutionResult:
-    """Images are recorded here; the paid extraction is a separate pass (SPEC-01 req 3)."""
+def _vision_image(
+    source_path: Path, source: SourceRef, settings: PipelineSettings, destination: Path
+) -> ExecutionResult:
+    """Extract one image through the paid vision route (SPEC-01 req 3).
+
+    An image is a one-page document, so it shares the combined-Markdown shape a scanned PDF
+    produces. When the route is disabled the file is still recorded as pending rather than
+    skipped, because req 6 wants every discovered file accounted for even when no call is made.
+    """
     if not settings.vision.enabled:
         return ExecutionResult(
             status=ProcessingStatus.PARTIAL,
-            reader="vision",
+            reader=_VISION_READER,
             sections=(
                 DocumentSection("Vision", rows=(("Vision route", "disabled; no call was made"),)),
             ),
             error=ErrorInfo(
                 category=ErrorCategory.API_ERROR,
                 message="image needs vision extraction but the vision route is disabled",
-                stage="vision_extraction",
-                reader="vision",
+                stage=_VISION_STAGE,
+                reader=_VISION_READER,
             ),
             retry_action=_RETRY_VISION_DISABLED,
         )
-    return ExecutionResult(
-        status=ProcessingStatus.PARTIAL,
-        reader="vision",
-        sections=(
-            DocumentSection("Vision", rows=(("Vision route", "enabled; extraction pass pending"),)),
-        ),
-        error=ErrorInfo(
-            category=ErrorCategory.API_ERROR,
-            message="image is classified for vision extraction; the paid pass has not run",
-            stage="vision_extraction",
-            reader="vision",
-        ),
-        retry_action="Run the vision pass to extract this image.",
+
+    try:
+        prepared = prepare_image(
+            source_path.read_bytes(), max_edge_pixels=settings.vision.max_image_edge_pixels
+        )
+    except (PreprocessError, OSError) as error:
+        return ExecutionResult(
+            status=ProcessingStatus.FAILED,
+            reader=_VISION_READER,
+            error=ErrorInfo(
+                category=ErrorCategory.EXTRACTION_ERROR,
+                message=f"image could not be prepared for vision: {error}",
+                stage=_VISION_STAGE,
+                reader=_VISION_READER,
+            ),
+        )
+
+    outcome = _extract(prepared.content, prepared.media_type, settings)
+    if not outcome.ok:
+        return ExecutionResult(
+            status=ProcessingStatus.FAILED, reader=_VISION_READER, error=outcome.error
+        )
+
+    document = VisionDocument(
+        display_name=source_path.name,
+        source_path=source.relative_path.as_posix(),
+        image_format=_format_label(prepared.media_type),
+        width=prepared.width,
+        height=prepared.height,
+        page_count=1,
+        model=settings.vision.model,
+        status=ProcessingStatus.SUCCESS.value,
+        pages=(VisionPage(number=1, extraction=outcome.extraction),),
     )
+    return ExecutionResult(
+        status=ProcessingStatus.SUCCESS,
+        reader=_VISION_READER,
+        outputs=(_write_vision_markdown(document, destination),),
+        sections=(_vision_section(document),),
+    )
+
+
+# --- the paid vision call -------------------------------------------------------------------------
+
+
+def _vision_transport(settings: VisionSettings):
+    """Build the HTTP transport the vision route posts through.
+
+    ADR-011 keeps the transport injectable so retry and failure paths are exercised with no
+    socket at all; the suite replaces this with an httpx.MockTransport.
+    """
+    import httpx
+
+    return httpx.Client()
+
+
+def _extract(image: bytes, media_type: str, settings: PipelineSettings):
+    """One paid extraction, through a transport that is closed even when the call fails."""
+    with _vision_transport(settings.vision) as http_client:
+        return VisionClient(http_client, settings=settings.vision).extract(
+            image, media_type=media_type
+        )
+
+
+def _write_vision_markdown(document: VisionDocument, destination: Path) -> OutputRef:
+    """Publish the combined Markdown and describe it as an output of this version."""
+    markdown = render_vision_document(document)
+    atomic_write_text(destination / _VISION_FILENAME, markdown)
+    return OutputRef("vision", PurePosixPath(_VISION_FILENAME), f"{len(markdown)} characters")
+
+
+def _vision_section(document: VisionDocument) -> DocumentSection:
+    return DocumentSection(
+        "Vision",
+        rows=(
+            ("Model", document.model),
+            ("Pages", str(document.page_count)),
+            ("Pages extracted", str(sum(1 for page in document.pages if page.extraction))),
+            ("Pages failed", str(sum(1 for page in document.pages if page.failure))),
+        ),
+    )
+
+
+def _format_label(media_type: str) -> str:
+    """'image/png' becomes 'PNG', the human name req 3 records in the document."""
+    return media_type.rsplit("/", 1)[-1].upper()
 
 
 def _no_extraction(route: Route) -> ExecutionResult:
@@ -542,8 +789,6 @@ def _publish_text(
 ) -> tuple[tuple[OutputRef, ...], int, ErrorInfo | None]:
     """Write extracted text and its chunk records. Shared by text, structured and PDF."""
     import json
-
-    from ca_agent.storage.atomic import atomic_write_text
 
     if not units:
         return (), 0, None

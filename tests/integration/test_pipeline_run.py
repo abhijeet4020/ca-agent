@@ -323,6 +323,108 @@ def test_the_report_summarises_without_drowning_the_operator(corpus, tmp_path):
     assert len(report.splitlines()) < 80, "a run report must stay readable"
 
 
+# --- the batch vision pass (requirement 3 and 8) ------------------------------------------------
+
+
+@pytest.fixture
+def vision_corpus(tmp_path: Path) -> Path:
+    """A corpus with one image and one spreadsheet, for the vision reuse contract."""
+    raw = tmp_path / "raw_data"
+    acme = raw / "Business Clients" / "ACME TRADING"
+    files.write_bytes(
+        acme / "accounts" / "ledger.xlsx",
+        files.workbook_bytes(
+            {"Sheet1": [["PAN", "Amount"], ["0001234A", 100]]}, text_columns={"Sheet1": (0,)}
+        ),
+    )
+    files.write_bytes(acme / "scans" / "challan.png", files.image_bytes("PNG", (48, 48)))
+    return raw
+
+
+def _vision_mock(monkeypatch):
+    """Point the executor's vision transport at a mock, and count the paid calls."""
+    import httpx
+
+    from ca_agent.pipeline import executor
+
+    seen = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["count"] += 1
+        payload = {
+            "document_type": "GST payment challan",
+            "summary": "A challan.",
+            "visible_text": "CPIN 25090100012345",
+            "fields": [],
+            "tables": [],
+            "uncertainties": [],
+        }
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": json.dumps(payload)}}]}
+        )
+
+    monkeypatch.setattr(
+        executor,
+        "_vision_transport",
+        lambda settings: httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    return seen
+
+
+def test_a_vision_config_change_invalidates_only_vision_outputs(
+    vision_corpus, tmp_path, monkeypatch
+):
+    """Requirement 8: changing the vision section republishes the image, not the Parquet.
+
+    This is the payoff of per-section fingerprints: a model or temperature change must not
+    throw away thousands of Parquet files that vision had nothing to do with.
+    """
+    # Arrange
+    output = tmp_path / "out"
+    seen = _vision_mock(monkeypatch)
+    base = PipelineSettings(
+        paths=PathSettings(raw_root=vision_corpus, output_root=output),
+        vision=VisionSettings(enabled=True, api_key=None, model="test-model", temperature=0.0),
+    )
+    run_pipeline(base, RunOptions())
+    assert seen["count"] == 1, "the image must be extracted on the first run"
+    parquet_before = len(list(output.rglob("*.parquet")))
+    assert parquet_before >= 1
+
+    # Act - change only the vision section
+    changed = base.model_copy(
+        update={"vision": base.vision.model_copy(update={"temperature": 0.5})}
+    )
+    second = run_pipeline(changed, RunOptions())
+
+    # Assert - the image is republished under a new version, the spreadsheet is reused
+    assert len(list(output.rglob("vision/document.md"))) == 2, (
+        "a vision config change must publish a new vision output"
+    )
+    assert len(list(output.rglob("*.parquet"))) == parquet_before, (
+        "a vision config change must not invalidate Parquet outputs"
+    )
+    assert second.reused >= 1
+
+
+def test_a_settled_image_is_not_re_extracted_on_a_rerun(vision_corpus, tmp_path, monkeypatch):
+    # Arrange - the reuse rule that stops a rerun from spending money again
+    output = tmp_path / "out"
+    seen = _vision_mock(monkeypatch)
+    settings = PipelineSettings(
+        paths=PathSettings(raw_root=vision_corpus, output_root=output),
+        vision=VisionSettings(enabled=True, api_key=None, model="test-model"),
+    )
+    run_pipeline(settings, RunOptions())
+    calls_after_first = seen["count"]
+
+    # Act
+    run_pipeline(settings, RunOptions())
+
+    # Assert - the second run makes no paid call for content it already settled
+    assert seen["count"] == calls_after_first
+
+
 def test_an_unexpected_reader_exception_costs_one_file_not_the_run(corpus, tmp_path, monkeypatch):
     """The per-file boundary SPEC-01's exception discipline requires.
 

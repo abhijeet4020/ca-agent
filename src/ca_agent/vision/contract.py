@@ -90,6 +90,42 @@ Rules that matter more than completeness:
 """
 
 
+@dataclass(frozen=True, slots=True)
+class VisionPage:
+    """One page of a vision document: a validated extraction, native text, or a failure.
+
+    A page carries whichever of the three applies, and a MIXED page may carry both an
+    extraction and its native text layer. Keeping the failure on the page rather than failing
+    the document is what lets SPEC-01 req 3 preserve the pages that worked.
+    """
+
+    number: int
+    extraction: VisionExtraction | None = None
+    native_text: str = ""
+    failure: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VisionDocument:
+    """The combined Markdown SPEC-01 req 3 stores: one document per image or PDF.
+
+    It carries the format information req 3 requires alongside the content - dimensions, page
+    count, the model used, the processing status and the limitations - so the document is
+    self-describing rather than a bare transcription.
+    """
+
+    display_name: str
+    source_path: str
+    image_format: str
+    width: int
+    height: int
+    page_count: int
+    model: str
+    status: str
+    pages: tuple[VisionPage, ...]
+    limitations: tuple[str, ...] = ()
+
+
 class ContractError(Exception):
     """The reply did not satisfy the contract. Never downgraded to a warning."""
 
@@ -271,3 +307,53 @@ def _cell(value: str) -> str:
     which turns a correct extraction into a wrong table.
     """
     return value.replace("\\", "\\\\").replace("|", r"\|").replace("\n", " ").strip()
+
+
+# --- the combined document (SPEC-01 req 3) ---------------------------------------------------
+
+
+def render_vision_document(document: VisionDocument) -> str:
+    """Render one image or PDF as the combined Markdown the specification stores.
+
+    Every page is emitted in page order so a reader can tell a page that yielded nothing from
+    one that was never sent, and the format facts lead the document because req 3 requires the
+    model, dimensions and status to travel with the content. Page headings appear only for a
+    multi-page source, where a reference is needed to disambiguate.
+    """
+    lines: list[str] = [f"# {document.display_name}", "", *_facts(document), ""]
+    lines.extend(["", "## Limitations", ""])
+    lines.extend(
+        [f"- {item}" for item in document.limitations] if document.limitations
+        else ["_None reported._"]
+    )
+
+    paged = document.page_count > 1
+    for page in document.pages:
+        lines.extend(["", f"## Page {page.number}" if paged else "## Extraction", ""])
+        lines.extend(_page_body(page))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _facts(document: VisionDocument) -> list[str]:
+    rows = (
+        ("Source path", document.source_path),
+        ("Format", f"{document.image_format} ({document.width} x {document.height})"),
+        ("Pages", str(document.page_count)),
+        ("Model", document.model),
+        ("Status", document.status),
+    )
+    return [f"- **{label}:** {value}" for label, value in rows]
+
+
+def _page_body(page: VisionPage) -> list[str]:
+    """One page's blocks: its failure, its extraction and its native text layer, in that order."""
+    blocks: list[str] = []
+    if page.failure:
+        blocks.append(f"> **Extraction failed:** {page.failure}")
+    if page.extraction is not None:
+        blocks.append(render_markdown(page.extraction))
+    if page.native_text.strip():
+        blocks.append("**Native text layer**\n\n" + page.native_text.strip())
+    if not blocks:
+        blocks.append("_No content was found on this page._")
+    return ["\n\n".join(blocks), ""]
