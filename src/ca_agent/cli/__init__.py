@@ -107,6 +107,23 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     gold.set_defaults(handler=_run_gold)
 
+    search = subcommands.add_parser(
+        "search",
+        help="ask a question of the indexed corpus",
+        description=(
+            "Embeds your question and searches the client FAISS indexes, printing passages "
+            "with the client, document and page they came from. Indexes stay separate per "
+            "client, so every result says whose data it is."
+        ),
+    )
+    search.add_argument("query", help="what to look for, in plain language")
+    search.add_argument("-k", "--top", type=int, default=5, help="results to show (default 5)")
+    search.add_argument("--client", default=None, help="limit to clients matching this text")
+    search.add_argument("--category", default=None, help="limit to one category")
+    search.add_argument("--scope", default=None, help="limit to one exact scope id")
+    search.add_argument("--full", action="store_true", help="print whole passages, not extracts")
+    search.set_defaults(handler=_run_search)
+
     config = subcommands.add_parser("config", help="inspect effective configuration")
     config.add_argument("action", choices=("show", "hash"))
     config.set_defaults(handler=_run_config)
@@ -146,7 +163,7 @@ def _load(args: argparse.Namespace) -> PipelineSettings:
     that would spend money record their work as pending instead when vision is unavailable,
     so a full extraction run is possible with no credential at all.
     """
-    needs_credentials = args.command not in {"discover", "config", "run", "gold"}
+    needs_credentials = args.command not in {"discover", "config", "run", "gold", "search"}
     config_path = args.config if args.config and args.config.exists() else None
     try:
         return load_settings(config_path)
@@ -182,6 +199,49 @@ def _run_pipeline(args: argparse.Namespace, settings: PipelineSettings) -> int:
     )
     summary = run_pipeline(settings, options)
     print(format_report(summary))
+    return _EXIT_OK
+
+
+def _run_search(args: argparse.Namespace, settings: PipelineSettings) -> int:
+    """Answer a question from the Gold indexes, with citations."""
+    from ca_agent.gold.builder import gold_root
+    from ca_agent.gold.embedder import EmbeddingError, SentenceTransformerEmbedder
+    from ca_agent.gold.search import available_indexes, search
+
+    scopes_dir = gold_root(settings.paths.output_root) / "scopes"
+    indexes = available_indexes(scopes_dir)
+    if not indexes:
+        _LOG.error("no indexes at %s; run `gold` after the pipeline first", scopes_dir)
+        return _EXIT_RUNTIME_ERROR
+
+    try:
+        embedder = SentenceTransformerEmbedder(settings.embedding.model_name)
+        vector = embedder.encode([args.query])[0]
+        hits = search(
+            scopes_dir,
+            vector,
+            k=args.top,
+            client=args.client,
+            category=args.category,
+            scope_id=args.scope,
+        )
+    except (EmbeddingError, ValueError) as error:
+        _LOG.error("search failed: %s", error)
+        return _EXIT_RUNTIME_ERROR
+
+    if not hits:
+        print(f"No passages matched {args.query!r} in {len(indexes)} client index(es).")
+        return _EXIT_OK
+
+    print()
+    print(f"{len(hits)} result(s) for {args.query!r}, from {len(indexes)} client index(es):")
+    print()
+    for position, hit in enumerate(hits, start=1):
+        passage = hit.chunk.text if args.full else " ".join(hit.chunk.text.split())[:300]
+        print(f"{position}. [{hit.score:.3f}] {hit.client}  ({hit.category})")
+        print(f"   {hit.chunk.source_relpath}  -  {hit.chunk.unit_type}: {hit.chunk.unit_ref}")
+        print(f"   {passage}")
+        print()
     return _EXIT_OK
 
 

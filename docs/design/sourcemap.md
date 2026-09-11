@@ -68,6 +68,8 @@
 
 - `src/ca_agent/gold/index.py` : Builds and reloads one FAISS index, with the vector-to-chunk mapping written as an explicit ordered sidecar rather than inferred at read time. Reload verifies index and mapping agree and refuses otherwise: an index off by one row answers confidently with the wrong client's text.
 
+- `src/ca_agent/gold/search.py` : Answers a question against the client indexes - the point of the whole pipeline. Searches across indexes rather than merging them, because req 7 keeps each client's vectors separate and merging would destroy that boundary; every hit names its client, and a query embedded by a different model is refused rather than answered with nonsense.
+
 - `src/ca_agent/gold/builder.py` : Builds one index per client scope from Silver's chunk records. Scope isolation is structural - a chunk whose recorded scope disagrees with the directory holding it is refused, never indexed. Empty text is skipped and counted (req 2), row order is stable across builds, and each build publishes a new version directory.
 
 ### Layer 4 - orchestration

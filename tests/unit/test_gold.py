@@ -324,3 +324,90 @@ def test_an_embedder_returning_the_wrong_count_is_refused(tmp_path):
     # Assert
     assert summary.scopes_indexed == 0
     assert "mapping would be wrong" in summary.failures[0][1]
+
+
+# --- search (the app surface) -----------------------------------------------------------------
+
+
+def _build_two_clients(tmp_path):
+    output = tmp_path / "out"
+    _write_silver(
+        output,
+        "biz__acme__aaa",
+        [_chunk("biz__acme__aaa", 0, "depreciation on plant and machinery for the year",
+                category="Business Clients", client="ACME TRADING")],
+    )
+    _write_silver(
+        output,
+        "llp__zeta__bbb",
+        [_chunk("llp__zeta__bbb", 0, "partner remuneration and interest on capital",
+                category="LLP", client="ZETA LLP")],
+    )
+    build_gold(output_root=output, embedder=FakeEmbedder(), version_id="g000001")
+    return output
+
+
+def test_search_finds_the_matching_passage_across_clients(tmp_path):
+    # Arrange
+    from ca_agent.gold.builder import gold_root as _root
+    from ca_agent.gold.search import search
+
+    output = _build_two_clients(tmp_path)
+    embedder = FakeEmbedder()
+
+    # Act
+    hits = search(
+        _root(output) / "scopes",
+        embedder.encode(["depreciation on plant and machinery for the year"])[0],
+        k=3,
+    )
+
+    # Assert - the right passage, attributed to the right client
+    assert hits
+    assert "depreciation" in hits[0].chunk.text
+    assert hits[0].client == "ACME TRADING"
+
+
+def test_search_can_be_limited_to_one_client(tmp_path):
+    # Arrange - requirement 7: a client's data must be addressable on its own
+    from ca_agent.gold.builder import gold_root as _root
+    from ca_agent.gold.search import search
+
+    output = _build_two_clients(tmp_path)
+
+    # Act
+    hits = search(
+        _root(output) / "scopes", FakeEmbedder().encode(["anything at all"])[0], k=5, client="ZETA"
+    )
+
+    # Assert
+    assert hits
+    assert {hit.client for hit in hits} == {"ZETA LLP"}
+
+
+def test_every_hit_can_be_cited_back_to_its_document(tmp_path):
+    # Arrange - an answer nobody can verify is not an answer
+    from ca_agent.gold.builder import gold_root as _root
+    from ca_agent.gold.search import search
+
+    output = _build_two_clients(tmp_path)
+
+    # Act
+    hits = search(_root(output) / "scopes", FakeEmbedder().encode(["depreciation"])[0], k=1)
+
+    # Assert
+    citation = hits[0].citation()
+    assert hits[0].client in citation
+    assert "doc.docx" in citation
+
+
+def test_a_query_from_a_different_model_is_refused_not_answered(tmp_path):
+    # Arrange - comparing vectors across models produces confident nonsense
+    from ca_agent.gold.builder import gold_root as _root
+    from ca_agent.gold.search import search
+
+    output = _build_two_clients(tmp_path)
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="dimensions"):
+        search(_root(output) / "scopes", [0.1] * 99, k=3)
