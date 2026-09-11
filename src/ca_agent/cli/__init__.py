@@ -292,11 +292,6 @@ def _run_vision_extract(args: argparse.Namespace, settings: PipelineSettings) ->
     if not args.path.is_file():
         _LOG.error("%s is not a file", args.path)
         return _EXIT_CONFIG_ERROR
-    if settings.vision.api_key is None:
-        _LOG.error(
-            "no vision API key; set CAAGENT__VISION__API_KEY in .env (see .env.example)"
-        )
-        return _EXIT_CONFIG_ERROR
 
     try:
         if args.path.suffix.lower() == ".pdf":

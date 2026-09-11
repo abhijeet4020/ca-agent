@@ -138,11 +138,7 @@ class VisionClient:
             "max_tokens": self._settings.max_output_tokens,
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {
-                    "name": _SCHEMA_NAME,
-                    "strict": True,
-                    "schema": RESPONSE_SCHEMA,
-                },
+                "json_schema": _schema_block(self._settings.strict_schema),
             },
             "messages": [
                 {
@@ -220,6 +216,20 @@ class VisionClient:
 
     def _error(self, category: ErrorCategory, message: str) -> ErrorInfo:
         return ErrorInfo(category=category, message=message, stage=_STAGE, reader="vision")
+
+
+def _schema_block(strict: bool) -> dict:
+    """The json_schema block, with `strict` present only when it was asked for.
+
+    LM Studio rejects the flag outright with HTTP 400 "terminated", so sending it
+    unconditionally makes every local endpoint unusable. Omitting it costs nothing here: the
+    reply is validated against the same schema on arrival, which is what actually makes a
+    failed extraction impossible to mistake for a successful one.
+    """
+    block: dict = {"name": _SCHEMA_NAME, "schema": RESPONSE_SCHEMA}
+    if strict:
+        block["strict"] = True
+    return block
 
 
 def _parse_retry_after(value: str | None) -> float | None:

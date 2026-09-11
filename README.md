@@ -333,8 +333,20 @@ uv run python src\main.py vision-extract "path\to\scan.pdf" --output result.md
 ```
 
 One file per invocation, deliberately, so the cost of a call is visible before anything runs in
-bulk. Needs `CAAGENT__VISION__API_KEY` in `.env`. The model is asked for a strict JSON schema and
-the reply is validated against it, so a failed extraction is never reported as a success.
+bulk. The model is asked for a JSON schema and the reply is validated against it, so a failed
+extraction is never reported as a success.
+
+**A local model server costs nothing and needs no key.** Point `.env` at it and leave
+`CAAGENT__VISION__API_KEY` unset — no `Authorization` header is sent:
+
+```ini
+CAAGENT__VISION__BASE_URL=http://localhost:1234/v1
+CAAGENT__VISION__MODEL=google/gemma-3-4b
+```
+
+A key is required only for a non-local endpoint, where it still fails fast at load rather than
+hours into a run. Set `CAAGENT__VISION__STRICT_SCHEMA=true` for OpenAI; LM Studio rejects that
+flag with HTTP 400, which is why it is off by default.
 
 Add `--help` to any command for its full options. Global flags `--config PATH` and `--verbose`
 work everywhere.
@@ -497,5 +509,3 @@ tests could not.
 | `tests/plans/TP-01-silver-pipeline.md` | Test plan and acceptance-criteria traceability |
 
 ---
-
-*Project scaffolded from the Thinking Craftsman agentic engineering template by Nitin Bhide.*

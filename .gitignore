@@ -40,3 +40,5 @@ pipeline_run.log
 # Streamlit run logs
 streamlit.out.log
 streamlit.err.log
+gold.out.log
+gold.err.log

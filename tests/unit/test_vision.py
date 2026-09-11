@@ -79,7 +79,7 @@ def _extract(client) -> object:
 # --- the structured contract -------------------------------------------------------------
 
 
-def test_the_model_is_asked_for_a_strict_json_schema(tmp_path):
+def test_the_model_is_asked_for_a_json_schema(tmp_path):
     # Arrange - asking for a schema is what makes "did this work" checkable
     seen: dict = {}
 
@@ -90,10 +90,9 @@ def test_the_model_is_asked_for_a_strict_json_schema(tmp_path):
     # Act
     _extract(_client(handler))
 
-    # Assert
+    # Assert - the schema is always sent; `strict` is separately configurable
     response_format = seen["response_format"]
     assert response_format["type"] == "json_schema"
-    assert response_format["json_schema"]["strict"] is True
     assert response_format["json_schema"]["schema"] == RESPONSE_SCHEMA
 
 
@@ -433,3 +432,60 @@ def test_temperature_is_zero_so_extraction_is_repeatable():
 
     # Assert
     assert seen["temperature"] == 0.0
+
+
+# --- local endpoints and schema strictness (LM Studio regression) ---------------------------
+
+
+def test_strict_is_omitted_by_default():
+    """LM Studio rejects `strict` outright with HTTP 400 "terminated".
+
+    Sending it unconditionally made every local endpoint unusable. Omitting it costs nothing,
+    because the reply is validated against the same schema on arrival - that validation, not
+    the flag, is what makes a failed extraction impossible to mistake for a success.
+    """
+    # Arrange
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return _reply(_VALID_PAYLOAD)
+
+    # Act
+    _extract(_client(handler, VisionSettings(api_key=None, model="m")))
+
+    # Assert
+    schema_block = seen["response_format"]["json_schema"]
+    assert "strict" not in schema_block
+    assert schema_block["schema"] == RESPONSE_SCHEMA
+
+
+def test_strict_is_sent_when_configured():
+    # Arrange - OpenAI honours strict, so it stays available
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return _reply(_VALID_PAYLOAD)
+
+    # Act
+    _extract(_client(handler, VisionSettings(api_key="k", strict_schema=True)))
+
+    # Assert
+    assert seen["response_format"]["json_schema"]["strict"] is True
+
+
+def test_no_authorization_header_is_sent_without_a_key():
+    # Arrange - a local server has no credential, and sending an empty bearer confuses some
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization")
+        return _reply(_VALID_PAYLOAD)
+
+    # Act
+    result = _extract(_client(handler, VisionSettings(api_key=None)))
+
+    # Assert
+    assert seen["auth"] is None
+    assert result.ok is True

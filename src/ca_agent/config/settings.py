@@ -100,7 +100,14 @@ class VisionSettings(_Section):
     enabled: bool = True
     base_url: str = "https://api.openai.com/v1"
     model: str = "gpt-4o-mini"
+    #: Optional. A local server such as LM Studio or Ollama needs no credential, and demanding
+    #: one would block the cheapest way to run this route.
     api_key: SecretStr | None = None
+    # OpenAI's strict mode guarantees the reply matches the schema, but LM Studio rejects the
+    # flag outright with HTTP 400 "terminated". It is off by default because the reply is
+    # validated against the schema here regardless, so strict only improves the first-pass hit
+    # rate - it is not what makes the output trustworthy. Turn it on for OpenAI.
+    strict_schema: bool = False
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     max_output_tokens: int = Field(default=4096, gt=0)
     max_image_edge_pixels: int = Field(default=2000, gt=0)
@@ -198,6 +205,38 @@ class PipelineSettings(BaseModel):
     credentials: CredentialSettings = CredentialSettings()
 
 
+def _default_dotenv_path() -> Path:
+    """The repository root's .env, found relative to this file rather than the process cwd."""
+    return Path(__file__).resolve().parents[3] / ".env"
+
+
+def _read_dotenv(path: Path) -> dict[str, str]:
+    """Read a .env file into a mapping.
+
+    The application loads this itself rather than relying on `environment.bat` to export it.
+    A .bat runs in a cmd.exe subprocess, so when it is invoked from PowerShell its `set`
+    commands never reach the parent environment - which meant a configured .env was silently
+    ignored and the defaults were used instead, with no error to explain it.
+    """
+    values: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return values
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key.startswith(_ENV_PREFIX):
+            continue
+        # Values are commonly quoted by editors; the quotes are not part of the value.
+        values[key] = value.strip().strip('"').strip("'")
+    return values
+
+
 def _nest_environment(env: Mapping[str, str]) -> dict[str, Any]:
     """Turn CAAGENT__SECTION__KEY variables into a nested mapping."""
     nested: dict[str, Any] = {}
@@ -231,17 +270,22 @@ def load_settings(
     toml_data: Mapping[str, Any] | None = None,
     env: Mapping[str, str] | None = None,
     overrides: Mapping[str, Any] | None = None,
+    dotenv_path: Path | None = None,
 ) -> PipelineSettings:
     """Load, layer and validate configuration.
 
-    Precedence is defaults, then TOML, then environment, then explicit overrides. Validation
-    and the credential check both happen here so a long run fails in its first second rather
-    than hours in.
+    Precedence is defaults, then TOML, then `.env`, then real environment variables, then
+    explicit overrides - so an exported variable always beats the file, which is what anyone
+    who has used dotenv expects. Validation and the credential check both happen here so a
+    long run fails in its first second rather than hours in.
     """
     if toml_data is not None and config_path is not None:
         raise ConfigError("pass either config_path or toml_data, not both")
 
     layered: dict[str, Any] = _read_toml(config_path) if config_path else dict(toml_data or {})
+    if env is None:
+        resolved = dotenv_path if dotenv_path is not None else _default_dotenv_path()
+        layered = _merge(layered, _nest_environment(_read_dotenv(resolved)))
     layered = _merge(layered, _nest_environment(os.environ if env is None else env))
     if overrides:
         layered = _merge(layered, overrides)
@@ -265,10 +309,23 @@ def _read_toml(config_path: Path) -> dict[str, Any]:
         raise ConfigError(f"malformed TOML in {config_path}: {error}") from error
 
 
+#: Hosts that serve a model locally and need no credential.
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal")
+
+
 def _require_vision_credentials(settings: PipelineSettings) -> None:
-    """Fail fast when the vision route is enabled without a credential."""
-    if settings.vision.enabled and settings.vision.api_key is None:
-        raise ConfigError(
-            "vision route is enabled but no API key was supplied; set "
-            f"{_ENV_PREFIX}VISION{_ENV_DELIMITER}API_KEY in the environment or .env"
-        )
+    """Fail fast when a *hosted* vision endpoint is enabled without a credential.
+
+    A local server - LM Studio, Ollama, vLLM - has no API key to give, so requiring one would
+    block the cheapest way to run this route entirely. A remote endpoint still fails at load
+    rather than hours into a run, which is what the original check was for.
+    """
+    if not settings.vision.enabled or settings.vision.api_key is not None:
+        return
+    if any(host in settings.vision.base_url for host in _LOCAL_HOSTS):
+        return
+    raise ConfigError(
+        f"vision route is enabled against {settings.vision.base_url} but no API key was "
+        f"supplied; set {_ENV_PREFIX}VISION{_ENV_DELIMITER}API_KEY in the environment or .env, "
+        "or point base_url at a local server such as http://localhost:1234/v1"
+    )
