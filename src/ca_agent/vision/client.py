@@ -118,7 +118,22 @@ class VisionClient:
                     attempts=attempt,
                 )
 
-            return self._parse(response, attempt)
+            result, finish_reason = self._parse(response, attempt)
+            if result.ok:
+                return result
+
+            # A 200 OK that fails the contract is normally a final failure - a model that
+            # returned well-formed but wrong JSON will do it again. But finish_reason "length"
+            # means the model hit max_tokens before finishing the JSON, which is a transient
+            # failure: a fresh attempt has a real chance of not falling into a repetition loop.
+            # Small local models are especially prone to this on dense scripts (Marathi, etc.)
+            # where they can get stuck repeating tokens until the ceiling cuts them off.
+            if finish_reason == "length" and attempt < self._settings.max_attempts:
+                last_error = result.error
+                self._back_off(attempt, None)
+                continue
+
+            return result
 
         return VisionResult(
             ok=False,
@@ -165,42 +180,58 @@ class VisionClient:
 
     # --- response handling ---------------------------------------------------------------
 
-    def _parse(self, response, attempt: int) -> VisionResult:
+    def _parse(self, response, attempt: int) -> tuple[VisionResult, str | None]:
+        """Parse and validate a successful HTTP response.
+
+        Returns the result and the ``finish_reason`` from the response, so the caller
+        can decide whether a truncated JSON failure (``finish_reason == "length"``)
+        is worth retrying.
+        """
         try:
             body = response.json()
+            finish_reason = body.get("choices", [{}])[0].get("finish_reason")
             content = body["choices"][0]["message"]["content"]
         except (ValueError, KeyError, IndexError, TypeError) as error:
-            return VisionResult(
-                ok=False,
-                error=self._error(
-                    ErrorCategory.RESPONSE_PARSE_ERROR, f"unexpected response shape: {error}"
+            return (
+                VisionResult(
+                    ok=False,
+                    error=self._error(
+                        ErrorCategory.RESPONSE_PARSE_ERROR, f"unexpected response shape: {error}"
+                    ),
+                    attempts=attempt,
                 ),
-                attempts=attempt,
+                None,
             )
 
         try:
             extraction = parse_extraction(content if isinstance(content, str) else "")
         except ContractError as error:
-            return VisionResult(
-                ok=False,
-                error=self._error(ErrorCategory.RESPONSE_PARSE_ERROR, str(error)),
-                attempts=attempt,
+            return (
+                VisionResult(
+                    ok=False,
+                    error=self._error(ErrorCategory.RESPONSE_PARSE_ERROR, str(error)),
+                    attempts=attempt,
+                ),
+                finish_reason,
             )
 
         if not extraction.has_content():
             # A well-formed but wholly empty object means the model did not read the document.
             # Reporting that as success would make a failed read indistinguishable from a
             # blank page, which SPEC-01 req 3 forbids.
-            return VisionResult(
-                ok=False,
-                error=self._error(
-                    ErrorCategory.RESPONSE_PARSE_ERROR,
-                    "reply contained no text, fields or tables",
+            return (
+                VisionResult(
+                    ok=False,
+                    error=self._error(
+                        ErrorCategory.RESPONSE_PARSE_ERROR,
+                        "reply contained no text, fields or tables",
+                    ),
+                    attempts=attempt,
                 ),
-                attempts=attempt,
+                finish_reason,
             )
 
-        return VisionResult(ok=True, extraction=extraction, attempts=attempt)
+        return (VisionResult(ok=True, extraction=extraction, attempts=attempt), finish_reason)
 
     # --- backoff -----------------------------------------------------------------------------
 

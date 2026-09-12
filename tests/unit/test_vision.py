@@ -55,11 +55,11 @@ _VALID_PAYLOAD = {
 }
 
 
-def _reply(payload: object, *, status: int = 200) -> httpx.Response:
+def _reply(payload: object, *, status: int = 200, finish_reason: str = "stop") -> httpx.Response:
     content = payload if isinstance(payload, str) else json.dumps(payload)
     return httpx.Response(
         status,
-        json={"choices": [{"message": {"content": content}}]},
+        json={"choices": [{"message": {"content": content}, "finish_reason": finish_reason}]},
     )
 
 
@@ -302,6 +302,59 @@ def test_a_timeout_is_retried_then_recorded():
     assert result.ok is False
     assert result.error.category is ErrorCategory.API_TIMEOUT
     assert len(sleeps) == 1
+
+
+def test_truncated_json_from_token_limit_is_retried():
+    """finish_reason=length means the model ran out of tokens mid-JSON.
+
+    Small local models sometimes get stuck repeating tokens on dense scripts and
+    hit max_tokens before closing the JSON. That is transient: a fresh attempt
+    has a real chance of not entering the loop. The client must retry it rather
+    than giving up on the first 200 OK that has a broken body.
+    """
+    # Arrange - first reply is truncated JSON with finish_reason=length
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            # Truncated JSON - the model hit max_tokens before finishing
+            return _reply('{"document_type": "x", "summary": "', finish_reason="length")
+        return _reply(_VALID_PAYLOAD)
+
+    sleeps: list[float] = []
+
+    # Act
+    result = _extract(_client(handler, sleeps=sleeps))
+
+    # Assert
+    assert result.ok is True
+    assert calls["count"] == 2, "the truncated first attempt should have been retried"
+    assert len(sleeps) == 1, "backoff should have been applied between attempts"
+
+
+def test_a_parse_error_without_length_is_not_retried():
+    """A 200 OK with finish_reason=stop and bad JSON is the model's own fault.
+
+    Retrying it would spend money to fail the same way again, so it must
+    return immediately - unlike the length-truncation case.
+    """
+    calls = {"count": 0}
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        # Well-formed JSON with a missing key, finish_reason=stop
+        payload = {key: value for key, value in _VALID_PAYLOAD.items() if key != "visible_text"}
+        return _reply(payload, finish_reason="stop")
+
+    # Act
+    result = _extract(_client(handler, sleeps=sleeps))
+
+    # Assert
+    assert result.ok is False
+    assert calls["count"] == 1, "a non-length parse error must not be retried"
+    assert sleeps == []
 
 
 # --- credentials ---------------------------------------------------------------------------------

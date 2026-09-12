@@ -65,3 +65,72 @@ are currently sequential; `vision.max_concurrency` is not yet used. Do that as i
   reprocessed. The earlier unexplained progressive deletion of `data/silver` still has no cause;
   the Defender scan recommended in `session-handoff.md` has not been confirmed as done.
 
+## Serving gemma-3-4b on a 4 GB GPU (guidance given 2026-09-12, UPDATED for Gemma 4 E2B)
+
+**Correction:** the model on the server laptop is **Gemma 4 E2B** (not Gemma 3 4B). Q4_K_M file
+= 3.46 GB. The architecture is very different and far more efficient.
+
+**Gemma 4 E2B architecture (from config.json):**
+- 35 text layers, 8 attention heads, **1 KV head** (extreme GQA)
+- head_dim=256, hidden_size=1536
+- sliding_window=512 (local layers only cache 512 tokens)
+- layer_types: 7 global (full attention) + 28 local (sliding window)
+- num_kv_shared_layers=20 (20 layers share KV with previous layer → only 15 effective)
+- 128K max context but KV cache is tiny
+
+**KV cache per token (fp16, no quantization):**
+- Per layer per token: 1 × 256 × 2 (K+V) × 2 bytes = 1024 bytes
+- Effective layers: ~15 (35 - 20 shared)
+- At C=4000: ~18 MB total KV cache
+- At C=8192: ~31 MB total KV cache
+- **Going from 4000 → 8192 costs only ~13 MB — it's free**
+
+**VRAM breakdown (Q4_K_M, full GPU offload):**
+- Model weights: ~3.46 GB (the GGUF file)
+- mmproj (vision tower ~150M): ~300 MB
+- KV cache at 8192: ~31 MB
+- Compute buffers (flash attention, etc.): ~200 MB
+- **Total: ~3.99 GB — just fits 4 GB**
+
+**Recommended: context window = 8192**
+Pipeline needs: prompt_tokens (~1272 for one PDF page) + max_output_tokens (4096) = 5368.
+Context 4000 is too small (5368 > 4000 → HTTP 400 on large pages).
+8192 gives 5368 + ~2824 headroom, and the KV cost is only 31 MB.
+
+**Critical: the user's 2.1 GB VRAM at context 4000 means partial GPU offload, not full.**
+E2B Q4_K_M should fit entirely on a 4 GB GPU at ~4.0 GB. The user needs to set
+`-ngl 99` (or `-ngl 999`) to offload all layers. At 2.1 GB, roughly 60% of layers are on
+GPU — that's why PDF pages are slow (CPU fallback for vision processing).
+
+## Truncated-JSON retry fix (2026-09-12)
+
+**Symptom:** `pune plot .pdf` (Marathi land record, 2 scanned pages) returned "error for page 1"
+through the pipeline even though `vision-extract` on the same model/server worked fine.
+
+**Root cause:** Gemma 3 at `temperature=0` is non-deterministic (batching/memory alignment).
+On dense Marathi text it sometimes enters a **repetition loop** — e.g. repeating `[भू-जिल्हा]`
+hundreds of times in `visible_text` — until it hits `max_tokens=4096`, producing truncated
+JSON with `finish_reason=length`. Measured: 2/5 attempts succeed (`finish_reason=stop`, ~1946
+tokens), 3/5 fail with `finish_reason=length` and 4096 completion tokens.
+
+The pipeline's `VisionClient._parse()` returned a non-retryable failure on `ContractError`
+immediately — it never retried a 200-OK response with a broken body. So the first truncated
+attempt was a permanent failure for that page.
+
+**Fix:** `VisionClient._parse()` now returns `(result, finish_reason)`. `extract()` retries
+when `finish_reason == "length"` (token-limit truncation) because a fresh attempt has a real
+chance of avoiding the repetition loop. Other parse errors (`finish_reason=stop` with bad
+JSON) are still non-retryable — that is the model's own fault and retrying wastes money.
+
+Two new tests: `test_truncated_json_from_token_limit_is_retried` and
+`test_a_parse_error_without_length_is_not_retried`. All 464 tests pass, ruff clean.
+
+**`.env` updated:** `MAX_ATTEMPTS=3` (was 5 default), `REQUEST_TIMEOUT_SECONDS=180` (was 120).
+4096 max_output_tokens stays — successful extractions use ~1946 tokens so 4096 is the right
+ceiling; the issue was not the ceiling but the lack of retry.
+
+**Live-verified:** `pune plot .pdf` now returns `status=success` with both pages extracted and
+no limitations. The retry consumed one extra ~100s call on page 1 (first attempt truncated,
+second succeeded) — acceptable for a local server where the alternative was total failure.
+
+
